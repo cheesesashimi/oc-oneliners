@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# Used primarily to evalute OpenShift repositories that have many OWNERS files throughout the repository.
+
 from collections import defaultdict
 
 import os

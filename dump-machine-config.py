@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 
+# Used to dump an OpenShift MachineConfig while decoding any encoded file
+# contents and pretty-printing any JSON file contents found. It does not
+# (currently) support expanding gzipped payloads.
+
 from urllib.parse import unquote
 import json
 import yaml

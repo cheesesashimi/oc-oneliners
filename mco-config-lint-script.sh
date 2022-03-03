@@ -1,20 +1,23 @@
 #!/bin/bash
 
+# Attempts to implement a shellcheck linter for the configs that live within the MCO repo, but are not owned by the MCO developers.
+# Currently does not work so well for the templatized configs.
+
 set -uo pipefail
 
 # Gather all the YAML files which do not have Golang templates embedded within them.
-# non_templatized_script_files="$(rg -g "*.yaml" --files-without-match -F "{{" ./templates | xargs rg --files-with-matches -F '#!/bin/bash' | sort)"
-#
-# for file in $non_templatized_script_files; do
-#   # Extract the path from the file
-#   script_file="$(yq eval '.path' "$file")"
-#   echo "----- In $script_file -----"
-#
-#   # Extract the script and pipe it into shellcheck
-#   # https://github.com/koalaman/shellcheck
-#   yq eval '.contents.inline' "$file" | shellcheck -
-#   printf "\n"
-# done
+non_templatized_script_files="$(rg -g "*.yaml" --files-without-match -F "{{" ./templates | xargs rg --files-with-matches -F '#!/bin/bash' | sort)"
+
+for file in $non_templatized_script_files; do
+  # Extract the path from the file
+  script_file="$(yq eval '.path' "$file")"
+  echo "----- In $script_file -----"
+
+  # Extract the script and pipe it into shellcheck
+  # https://github.com/koalaman/shellcheck
+  yq eval '.contents.inline' "$file" | shellcheck -
+  printf "\n"
+done
 
 read -r -d '' mock_data << EOM
 {
@@ -56,8 +59,8 @@ for file in $templatized_script_files; do
   gomplate -c '.=mock_data.json' -f "$file" -d '.=mock_data.json' \
     --plugin=onPremPlatformAPIServerInternalIP=./print.sh \
     --plugin=onPremPlatformIngressIP=./print.sh
-#  #script_file="$(echo "$rendered" | yq eval '.path' -)"
-#  #echo "----- In $script_file -----"
-#  #echo "$rendered" | yq eval '.contents.inline' - | shellcheck -
-#  #printf "\n"
+  script_file="$(echo "$rendered" | yq eval '.path' -)"
+  echo "----- In $script_file -----"
+  echo "$rendered" | yq eval '.contents.inline' - | shellcheck -
+  printf "\n"
 done

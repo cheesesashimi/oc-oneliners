@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+# Quickly dumps node objects from an OpenShift must-gather and organizes them
+# by role (MachineConfigPool).
+
 from collections import defaultdict
 
 import os
