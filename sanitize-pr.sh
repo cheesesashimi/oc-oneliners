@@ -5,6 +5,11 @@
 # to trigger the CI system and are inherently disposable. They do, however,
 # pollute the comment stream.
 
+# Requirements:
+# - Bash
+# - jq
+# - gh (GitHub CLI)
+
 org="$1"
 repo="$2"
 pr="$3"
