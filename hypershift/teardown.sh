@@ -9,3 +9,7 @@ hosted_clusters="$(oc get "$HOSTED_CLUSTER_TYPE" -n "$CLUSTERS_NAMESPACE" -o nam
 for hosted_cluster in ${hosted_clusters[@]}; do
   "$SCRIPT_DIR/destroy-hosted-cluster.sh" "$hosted_cluster"
 done
+
+if [[ -f "$MANIFESTS_FILE" ]]; then
+  oc delete -f "$MANIFESTS_FILE"
+fi

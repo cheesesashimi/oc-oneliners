@@ -19,6 +19,12 @@ aws s3api create-bucket \
   --bucket "$BUCKET_NAME" \
   --region "$REGION"
 
+# Renders the Hypershift manifests to disk so we can teardown later.
+hypershift install render \
+  --oidc-storage-provider-s3-bucket-name "$BUCKET_NAME" \
+  --oidc-storage-provider-s3-credentials "$AWS_CONFIG_FILE" \
+  --oidc-storage-provider-s3-region "$REGION" > "$MANIFESTS_FILE"
+
 # Installs Hypershift onto your target cluster, which then becomes the management cluster.
 hypershift install \
   --oidc-storage-provider-s3-bucket-name "$BUCKET_NAME" \
