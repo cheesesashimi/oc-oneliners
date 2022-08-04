@@ -22,3 +22,8 @@ hypershift destroy cluster aws \
   --infra-id "$infra_id" \
   --base-domain "$base_domain" \
   --aws-creds "$AWS_CONFIG_FILE"
+
+infra_id_file="$PWD/$hosted_cluster_name-infra-id"
+if [ -f "$infra_id_file" ]; then
+  rm "$infra_id_file"
+fi

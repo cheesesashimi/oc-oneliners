@@ -15,4 +15,7 @@ hypershift create cluster aws \
   --generate-ssh
 
 infra_id="$(oc get "$HOSTED_CLUSTER_TYPE/$cluster_name" -n "$CLUSTERS_NAMESPACE" -o jsonpath='{.spec.infraID}')"
+infra_id_file="$PWD/$cluster_name-infra-id"
+echo "$infra_id" > "$infra_id_file"
 echo "Your hosted cluster '$cluster_name' has infra ID: $infra_id"
+echo "The infra ID has been saved to: $infra_id_file"
