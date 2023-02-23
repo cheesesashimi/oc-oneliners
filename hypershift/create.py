@@ -1,13 +1,40 @@
 #!/usr/bin/env python3
 
-from utils import Config
+from utils import Config, Defaults, byte_to_str
 
 import os
 import shutil
 import subprocess
 
 
-def create_hosted_cluster(cluster_name, release=None):
+def get_management_cluster_release_version():
+    out = subprocess.run([
+        shutil.which("oc"),
+        "get",
+        "clusterversion",
+        "-o", "jsonpath='{.items[0].status.desired.image}'"
+    ], capture_output=True, env=os.environ)
+    out.check_returncode()
+    return byte_to_str(out.stdout)
+
+
+def get_hypershift_operator_image_pullspec():
+    # Get the container pullspec for the Hypershift Operator so we can
+    # explicitly specify that we want our hosted cluster to use it.
+    out = subprocess.run([
+        shutil.which("oc"),
+        "get",
+        "deployment/operator",
+        "--namespace", "hypershift",
+        "-o", "jsonpath='{.spec.template.spec.containers[0].image}'"
+    ], capture_output=True, env=os.environ)
+    out.check_returncode()
+    return byte_to_str(out.stdout)
+
+
+def get_hypershift_args(cluster_name, release):
+    hypershift_operator_image = get_hypershift_operator_image_pullspec()
+
     hypershift_args = [
         shutil.which("hypershift"),
         "create", "cluster", "aws",
@@ -20,10 +47,22 @@ def create_hosted_cluster(cluster_name, release=None):
             "--generate-ssh",
     ]
 
-    if release:
-        print("Will use OpenShift release", release, "for the hosted cluster")
-        hypershift_args.extend(["--release-image", release])
+    if hypershift_operator_image != Defaults.OPERATOR_IMAGE:
+        hypershift_args.extend(["--control-plane-operator-image", hypershift_operator_image])
 
+    if release:
+        print("Will use provided OpenShift release", release, "for the hosted cluster")
+    else:
+        release = get_management_cluster_release_version()
+        print("Defaulting to using the management cluster OpenShift release", release, "for the hosted cluster")
+
+    hypershift_args.extend(["--release-image", release])
+
+    return hypershift_args
+
+def create_hosted_cluster(cluster_name, release=None):
+    hypershift_args = get_hypershift_args(cluster_name, release)
+    print("Running: $", ' '.join(hypershift_args))
     out = subprocess.run(hypershift_args)
     out.check_returncode()
 
@@ -37,7 +76,7 @@ def create_hosted_cluster(cluster_name, release=None):
 
     out.check_returncode()
 
-    infra_id = str(out.stdout)
+    infra_id = byte_to_str(out.stdout)
 
     infra_id_filename = os.path.join(os.getcwd(), cluster_name + "-infra-id")
     with open(infra_id_filename, "w") as infra_id_file:

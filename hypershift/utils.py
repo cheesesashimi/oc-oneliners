@@ -35,6 +35,7 @@ class Config(object):
 
 
 class Defaults(object):
+    OPERATOR_IMAGE = "quay.io/hypershift/hypershift-operator:latest"
     CONTROL_PLANE_IMAGE = "quay.io/" + user + "control-plane-operator:latest"
     CLUSTER_NAME = user + "-hosted-cluster"
     MACHINECONFIG = "test-machineconfig"
@@ -81,3 +82,7 @@ def use_custom_control_plane_operator(image, cluster_name):
     cmd.check_returncode()
 
     print("Hosted cluster", cluster_name, "configured to use", image)
+
+
+def byte_to_str(b):
+    return b.decode("utf-8").strip("'").strip("\"")

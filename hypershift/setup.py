@@ -26,6 +26,7 @@ def render_hypershift_manifests(install_args):
         shutil.which("hypershift"),
         "install",
         "render",
+        "--format=json",
         ] + install_args, capture_output=True)
 
     out.check_returncode()

@@ -66,14 +66,6 @@ def decode_and_increment_file_content(content):
     return DATA_PREFIX + content
 
 
-def prepare_patch(machineconfig):
-    return {
-        "data": {
-            "config": yaml.safe_dump(machineconfig)
-        }
-    }
-
-
 def apply_patch(patch):
     dumped_patch = yaml.safe_dump(patch)
     patch_arg = "--patch=" + dumped_patch
@@ -84,8 +76,13 @@ machineconfig = get_initial_machineconfig()
 
 file_content = machineconfig["spec"]["config"]["storage"]["files"][0]["contents"]["source"]
 incremented_file_content = decode_and_increment_file_content(file_content)
+print(incremented_file_content)
 machineconfig["spec"]["config"]["storage"]["files"][0]["contents"]["source"] = incremented_file_content
 
-patch = prepare_patch(machineconfig)
-result = apply_patch(patch)
+result = apply_patch({
+    "data": {
+        "config": yaml.safe_dump(machineconfig)
+    }
+})
+
 sys.exit(result.returncode)

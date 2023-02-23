@@ -46,13 +46,37 @@ def get_hypershift_delete_cmd(hostedcluster):
     return subprocess.Popen(args, env=os.environ)
 
 
-def execute(hostedclusters):
-    cmd_instances = [get_hypershift_delete_cmd(hostedcluster)
-                    for hostedcluster in get_hostedclusters()]
+def get_namespace_delete_cmd(namespace):
+    args = [
+        shutil.which("oc"),
+        "delete",
+        "namespace/" + namespace
+    ]
 
-    for cmd in cmd_instances:
+    print("Running: $", ' '.join(args))
+
+    return subprocess.Popen(args, env=os.environ)
+
+
+def wait_for_cmds(cmds):
+    for cmd in cmds:
         cmd.wait()
 
-    for cmd in cmd_instances:
+    for cmd in cmds:
         if cmd.returncode != 0:
             sys.exit(cmd.returncode)
+
+
+def execute(hostedclusters):
+    if len(hostedclusters) == 0:
+        print("Found no hosted clusters, nothing to do!")
+        sys.exit(0)
+
+    # Delete hosted clusters
+    wait_for_cmds([get_hypershift_delete_cmd(hostedcluster)
+                    for hostedcluster in hostedclusters])
+
+    # Ensure the namespace is deleted
+    wait_for_cmds([get_namespace_delete_cmd(hostedcluster["metadata"]["namespace"])
+                    for hostedcluster in hostedclusters
+                    if hostedcluster["metadata"]["namespace"] != Config.CLUSTERS_NAMESPACE])
