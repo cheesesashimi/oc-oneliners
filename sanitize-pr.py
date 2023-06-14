@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 
+# Whenever I have a PR that I have to frequently trigger additional CI runs by
+# using the OpenShift CI bot, this is useful for removing all of my garbage
+# comments used to trigger certain CI workflows. This wraps the official GitHub
+# CLI which does most of the heavy lifting.
+
 import subprocess
 import json
 
