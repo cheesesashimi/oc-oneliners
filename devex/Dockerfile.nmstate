@@ -1,0 +1,2 @@
+FROM registry.ci.openshift.org/ocp/4.14:base
+RUN if ! rpm -q util-linux; then dnf install -y util-linux; fi && dnf -y install nmstate-2.2.9-6.rhaos4.14.el8 && dnf clean all && rm -rf /var/cache/dnf/*
