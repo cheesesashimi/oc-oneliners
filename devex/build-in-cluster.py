@@ -357,7 +357,8 @@ def start_mco_image_build_locally():
     imagestream = get_object(f"imagestream/{imagestream_name}")
     pullspec = imagestream["status"]["dockerImageRepository"] + ":latest"
 
-    return pullspec
+    return tagged_pullspec
+    #return pullspec
 
 
 # Determines if we can run our script.
@@ -367,26 +368,35 @@ def can_run():
         if not shutil.which(binary):
             print(f"Did not find required binary '{binary}'")
             return False
+        else:
+            print(f"Found {binary}")
 
     # If we can't determine the git remote, fail.
     git_remote = get_git_remote()
     if not git_remote:
         print(f"No forked git remote found. Either add one or set '{GIT_FORK_URL}' and try again!")
         return False
+    else:
+        print(f"Using git remote: {git_remote}")
 
     # If KUBECONFIG is not set, fail.
     kubeconfig = os.getenv("KUBECONFIG")
     if not kubeconfig:
         print("KUBECONFIG not set!")
         return False
+    else:
+        print(f"KUBECONFIG set to {kubeconfig}")
 
     if not os.path.exists(kubeconfig):
         print("No KUBECONFIG found at", kubeconfig)
         return False
+    else:
+        print(f"{kubeconfig} exists")
 
     # Attempt to get pods as a test that we have a working kubeconfig and oc
     # environment with the correct permissions.
     get_object("pods")
+    print("All systems go!")
 
     return True
 
