@@ -1,0 +1,10 @@
+FROM registry.fedoraproject.org/fedora:latest
+RUN --mount=type=cache,target=/var/cache/dnf,z \
+    dnf install -y gh sqlite3 python3 && \
+    mkdir -p /usr/local/bin/queries
+WORKDIR /out
+COPY fetch-prs-into-sqlite-db.py /usr/local/bin/fetch-prs-into-sqlite-db.py
+COPY runqueries.sh /usr/local/bin/runqueries.sh
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY *.sql /usr/local/bin/queries/
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
