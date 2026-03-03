@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 
+# The idea behind this script is to get the release payload from a given OCP
+# release and call skopeo inspect on each of the component pullspecs. The
+# search_func can be modified as well as the RELEASE_PULLSPEC to target a
+# specific release. In this very simple example, it just does a naive text
+# search for the substring "nginx".
+
 import asyncio
 import json
 import subprocess
