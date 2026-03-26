@@ -23,17 +23,29 @@
 
 set -xeuo
 
-#pullspec="quay.io/zzlotnik/toolbox:ai-workspace-fedora-43"
 pullspec="localhost/ai-helpers:latest"
-host_workdir="$HOME/Scratchspace/claude-mco-workspace"
-workspace="claude-workspace-skills-env"
+#pullspec="quay.io/zzlotnik/toolbox:ai-helpers-fedora-43"
+workspace="${1:-workspace}"
+workspace="${workspace/claude-/}"
+workspace="claude-${workspace}"
+host_workdir="${2:-}"
+
+if [[ -z "$host_workdir" ]]; then
+  echo "No host workdir provided"
+  exit 1
+fi
+
+if [[ ! -d "$host_workdir" ]]; then
+  echo "Host workdir $host_workdir does not exist"
+  exit 1
+fi
 
 if [[ ! -f "$HOME/.config/gcloud/application_default_credentials.json" ]]; then
   echo "$HOME/.config/gcloud/application_default_credentials.json does not exist, exiting"
   exit 1
 fi
 
-"$HOME/Repos/oc-oneliners/start-jira-mcp-server.sh"
+# "$HOME/Repos/oc-oneliners/start-jira-mcp-server.sh"
 
 if ! podman container inspect "$workspace" &> /dev/null; then
   if [[ "$pullspec" != *"localhost"* ]]; then
@@ -43,18 +55,20 @@ if ! podman container inspect "$workspace" &> /dev/null; then
   host_uid="$(id -u)"
 
   podman_args=(
-    --interactive
-    --tty
+    --detach
+#    --interactive
+#    --tty
     --rm
     --uidmap 1000:0:1
     --uidmap 0:1:1000
     --uidmap "$host_uid:1001:1"
     --name "$workspace"
-    --volume="$HOME/.docker/config.json:/root/.docker/config.json:z"
-    --volume="$workspace:/home/claude:Z"
-    --volume="$host_workdir:/workdir:Z"
-    --workdir="/workdir"
-    --volume="$HOME/.config/gcloud:/home/claude/.config/gcloud:Z"
+    --network=host # Not sure why this is suddenly needed...
+    # --volume="$HOME/.docker/config.json:/home/claude/.docker/config.json:z"
+#    --volume="claude-workspace-skills-env:/home/claude:Z"
+    --volume="$host_workdir:/workdir/$(basename "$host_workdir"):Z"
+    --workdir="/workdir/$(basename "$host_workdir")"
+    --volume="$HOME/.config/gcloud:/home/claude/.config/gcloud:z,U"
     --env "CLAUDE_CODE_USE_VERTEX=1"
     --env "CLOUD_ML_REGION=us-east5"
     --env "ANTHROPIC_VERTEX_PROJECT_ID=itpc-gcp-core-pe-eng-claude"
@@ -72,5 +86,7 @@ if ! podman container inspect "$workspace" &> /dev/null; then
     "$pullspec"
   )
 
-  podman run "${podman_args[@]}"
+  podman run "${podman_args[@]}" -c 'sleep infinity'
 fi
+
+podman exec -it "$workspace" /bin/bash
