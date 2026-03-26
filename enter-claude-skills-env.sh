@@ -23,8 +23,7 @@
 
 set -xeuo
 
-pullspec="localhost/ai-helpers:latest"
-#pullspec="quay.io/zzlotnik/toolbox:ai-helpers-fedora-43"
+pullspec="quay.io/zzlotnik/toolbox:ai-helpers-fedora-43"
 workspace="${1:-workspace}"
 workspace="${workspace/claude-/}"
 workspace="claude-${workspace}"
@@ -56,16 +55,12 @@ if ! podman container inspect "$workspace" &> /dev/null; then
 
   podman_args=(
     --detach
-#    --interactive
-#    --tty
     --rm
     --uidmap 1000:0:1
     --uidmap 0:1:1000
     --uidmap "$host_uid:1001:1"
     --name "$workspace"
     --network=host # Not sure why this is suddenly needed...
-    # --volume="$HOME/.docker/config.json:/home/claude/.docker/config.json:z"
-#    --volume="claude-workspace-skills-env:/home/claude:Z"
     --volume="$host_workdir:/workdir/$(basename "$host_workdir"):Z"
     --workdir="/workdir/$(basename "$host_workdir")"
     --volume="$HOME/.config/gcloud:/home/claude/.config/gcloud:z,U"
@@ -89,4 +84,9 @@ if ! podman container inspect "$workspace" &> /dev/null; then
   podman run "${podman_args[@]}" -c 'sleep infinity'
 fi
 
-podman exec -it "$workspace" /bin/bash
+# Start claude ina tmux session if one does not exist.
+if ! podman exec -it "$workspace" tmux has-session -t "$workspace" 2>/dev/null; then
+  podman exec -it "$workspace" tmux new-session -d -s "$workspace" 'claude'
+fi
+
+podman exec -it "$workspace" tmux attach-session -t "$workspace"
