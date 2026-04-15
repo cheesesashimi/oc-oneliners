@@ -16,28 +16,37 @@
 # to point to it and mount it into the container.
 
 # To use:
-# 1. Modify the host_workdir variable to point at the desired directory on your
-#    host. I do not recommend pointing it at your homedir root.
-# 2. Run this script which will pull the image and run it in interactive mode,
+# 1. Run this script with workspace name (optional, defaults to "workspace")
+#    followed by one or more host workdirs to mount.
+# 2. The script will pull the image and run it in interactive mode,
 #    setting up everything necessary for it to work.
+# Example: ./enter-claude-skills-env.sh myworkspace /path/to/dir1 /path/to/dir2
 
 set -xeuo
 
-pullspec="quay.io/zzlotnik/toolbox:ai-helpers-fedora-43"
+#pullspec="quay.io/zzlotnik/toolbox:ai-helpers-fedora-43"
+pullspec="localhost/ai-helpers:latest"
 workspace="${1:-workspace}"
 workspace="${workspace/claude-/}"
 workspace="claude-${workspace}"
-host_workdir="${2:-}"
 
-if [[ -z "$host_workdir" ]]; then
+# Collect all remaining arguments as host workdirs
+shift
+host_workdirs=("$@")
+
+if [[ ${#host_workdirs[@]} -eq 0 ]]; then
   echo "No host workdir provided"
+  echo "Usage: $0 [workspace_name] <host_workdir1> [host_workdir2] ..."
   exit 1
 fi
 
-if [[ ! -d "$host_workdir" ]]; then
-  echo "Host workdir $host_workdir does not exist"
-  exit 1
-fi
+# Validate that all provided directories exist
+for dir in "${host_workdirs[@]}"; do
+  if [[ ! -d "$dir" ]]; then
+    echo "Host workdir $dir does not exist"
+    exit 1
+  fi
+done
 
 if [[ ! -f "$HOME/.config/gcloud/application_default_credentials.json" ]]; then
   echo "$HOME/.config/gcloud/application_default_credentials.json does not exist, exiting"
@@ -53,6 +62,9 @@ if ! podman container inspect "$workspace" &> /dev/null; then
 
   host_uid="$(id -u)"
 
+  # Set the primary workdir to the first directory provided
+  primary_workdir="${host_workdirs[0]}"
+
   podman_args=(
     --detach
     --rm
@@ -61,32 +73,42 @@ if ! podman container inspect "$workspace" &> /dev/null; then
     --uidmap "$host_uid:1001:1"
     --name "$workspace"
     --network=host # Not sure why this is suddenly needed...
-    --volume="$host_workdir:/workdir/$(basename "$host_workdir"):Z"
-    --workdir="/workdir/$(basename "$host_workdir")"
+  )
+
+  # Mount all provided workdirs
+  for dir in "${host_workdirs[@]}"; do
+    podman_args+=(--volume="$dir:/workdir/$(basename "$dir"):Z")
+  done
+
+  podman_args+=(
+    --workdir="/workdir/$(basename "$primary_workdir")"
     --volume="$HOME/.config/gcloud:/home/claude/.config/gcloud:z,U"
+    --volume="$HOME/Repos/oc-oneliners/claude-entrypoint.sh:/claude-entrypoint.sh:z"
     --env "CLAUDE_CODE_USE_VERTEX=1"
     --env "CLOUD_ML_REGION=us-east5"
     --env "ANTHROPIC_VERTEX_PROJECT_ID=itpc-gcp-core-pe-eng-claude"
-    --entrypoint=/bin/bash
+    --env "JIRA_URL=https://redhat.atlassian.net"
+    --env "JIRA_USER=zzlotnik@redhat.com"
+    --env "JIRA_API_TOKEN=$(cat /home/zzlotnik/.creds/zzlotnik-jira-cloud-api-key)"
+    --entrypoint=/claude-entrypoint.sh
   )
 
-  if [[ -f "$host_workdir/kubeconfig" ]]; then
-    podman_args+=(
-      --env KUBECONFIG=/kubeconfig
-      --volume="$host_workdir/kubeconfig:/kubeconfig:z"
-    )
-  fi
+  # Check for kubeconfig in all provided workdirs, use the first one found
+  for dir in "${host_workdirs[@]}"; do
+    if [[ -f "$dir/kubeconfig" ]]; then
+      podman_args+=(
+        --env KUBECONFIG=/kubeconfig
+        --volume="$dir/kubeconfig:/kubeconfig:z"
+      )
+      break
+    fi
+  done
 
   podman_args+=(
     "$pullspec"
   )
 
-  podman run "${podman_args[@]}" -c 'sleep infinity'
-fi
-
-# Start claude ina tmux session if one does not exist.
-if ! podman exec -it "$workspace" tmux has-session -t "$workspace" 2>/dev/null; then
-  podman exec -it "$workspace" tmux new-session -d -s "$workspace" 'claude'
+  podman run "${podman_args[@]}" "$workspace"
 fi
 
 podman exec -it "$workspace" tmux attach-session -t "$workspace"
