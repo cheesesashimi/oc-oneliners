@@ -73,14 +73,6 @@ if ! podman container inspect "$workspace" &>/dev/null; then
     --gidmap 1001:1001:65536
     --name "$workspace"
     --network=host
-  )
-
-  # Mount all provided workdirs
-  for dir in "${host_workdirs[@]}"; do
-    podman_args+=(--volume="$dir:/workdir/$(basename "$dir"):z")
-  done
-
-  podman_args+=(
     --workdir="/workdir/$(basename "$primary_workdir")"
     --volume="$HOME/.config/gcloud:/home/claude/.config/gcloud:z,U"
     --volume="$HOME/Repos/oc-oneliners/claude-entrypoint.sh:/claude-entrypoint.sh:z"
@@ -93,6 +85,11 @@ if ! podman container inspect "$workspace" &>/dev/null; then
     --env "GH_TOKEN=$(cat "$HOME/.creds/gh-readonly-token")"
     --entrypoint=/claude-entrypoint.sh
   )
+
+  # Mount all provided workdirs
+  for dir in "${host_workdirs[@]}"; do
+    podman_args+=(--volume="$dir:/workdir/$(basename "$dir"):z")
+  done
 
   registry_auth_file=""
   registry_auth_candidates=()
