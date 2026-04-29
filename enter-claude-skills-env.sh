@@ -94,6 +94,31 @@ if ! podman container inspect "$workspace" &>/dev/null; then
     --entrypoint=/claude-entrypoint.sh
   )
 
+  registry_auth_file=""
+  registry_auth_candidates=()
+
+  if [[ -n "${REGISTRY_AUTH_FILE:-}" ]]; then
+    registry_auth_candidates+=("$REGISTRY_AUTH_FILE")
+  fi
+
+  registry_auth_candidates+=(
+    "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/auth.json"
+    "${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+    "$HOME/.config/containers/auth.json"
+    "$HOME/.docker/config.json"
+  )
+
+  for candidate in "${registry_auth_candidates[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      registry_auth_file="$candidate"
+      break
+    fi
+  done
+
+  if [[ -n "$registry_auth_file" ]]; then
+    podman_args+=(--volume="$registry_auth_file:/home/claude/.docker/config.json:z")
+  fi
+
   if podman container exists "jira-mcp-server"; then
     podman_args+=(--env "JIRA_MCP_SERVER=true")
   fi
