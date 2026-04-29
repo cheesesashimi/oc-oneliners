@@ -19,7 +19,10 @@ SESSION_NAME="$1"
 # Start tmux session
 tmux new-session -d -s "$SESSION_NAME" 'claude'
 
-claude mcp add --transport sse jira http://127.0.0.1:8080/sse
+if [[ -n "${JIRA_MCP_SERVER:-}" ]]; then
+  claude mcp add --transport sse jira http://127.0.0.1:8080/sse
+fi
+
 mkdir -p /home/claude/.config/claude-code
 bash -c 'jq -n \
   --arg url "$JIRA_URL" \

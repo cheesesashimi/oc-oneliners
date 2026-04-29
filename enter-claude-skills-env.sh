@@ -24,8 +24,7 @@
 
 set -xeuo
 
-#pullspec="quay.io/zzlotnik/toolbox:ai-helpers-fedora-43"
-pullspec="localhost/ai-helpers:latest"
+pullspec="quay.io/zzlotnik/toolbox:ai-helpers-fedora-44"
 workspace="${1:-workspace}"
 workspace="${workspace/claude-/}"
 workspace="claude-${workspace}"
@@ -85,13 +84,18 @@ if ! podman container inspect "$workspace" &> /dev/null; then
     --volume="$HOME/.config/gcloud:/home/claude/.config/gcloud:z,U"
     --volume="$HOME/Repos/oc-oneliners/claude-entrypoint.sh:/claude-entrypoint.sh:z"
     --env "CLAUDE_CODE_USE_VERTEX=1"
-    --env "CLOUD_ML_REGION=us-east5"
+    --env "CLOUD_ML_REGION=global"
     --env "ANTHROPIC_VERTEX_PROJECT_ID=itpc-gcp-core-pe-eng-claude"
     --env "JIRA_URL=https://redhat.atlassian.net"
     --env "JIRA_USER=zzlotnik@redhat.com"
-    --env "JIRA_API_TOKEN=$(cat /home/zzlotnik/.creds/zzlotnik-jira-cloud-api-key)"
+    --env "JIRA_API_TOKEN=$(cat "$HOME/.creds/zzlotnik-jira-cloud-api-key")"
+    --env "GH_TOKEN=$(cat "$HOME/.creds/gh-readonly-token")"
     --entrypoint=/claude-entrypoint.sh
   )
+
+  if podman container exists "jira-mcp-server"; then
+    podman_args+=(--env "JIRA_MCP_SERVER=true")
+  fi
 
   # Check for kubeconfig in all provided workdirs, use the first one found
   for dir in "${host_workdirs[@]}"; do
