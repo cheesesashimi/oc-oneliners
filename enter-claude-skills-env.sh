@@ -54,29 +54,30 @@ fi
 
 # "$HOME/Repos/oc-oneliners/start-jira-mcp-server.sh"
 
-if ! podman container inspect "$workspace" &> /dev/null; then
+if ! podman container inspect "$workspace" &>/dev/null; then
   if [[ "$pullspec" != *"localhost"* ]]; then
     podman pull "$pullspec"
   fi
 
-  host_uid="$(id -u)"
-
   # Set the primary workdir to the first directory provided
   primary_workdir="${host_workdirs[0]}"
-
   podman_args=(
     --detach
     --rm
+    --privileged
     --uidmap 1000:0:1
     --uidmap 0:1:1000
-    --uidmap "$host_uid:1001:1"
+    --uidmap 1001:1001:65536
+    --gidmap 1000:0:1
+    --gidmap 0:1:1000
+    --gidmap 1001:1001:65536
     --name "$workspace"
-    --network=host # Not sure why this is suddenly needed...
+    --network=host
   )
 
   # Mount all provided workdirs
   for dir in "${host_workdirs[@]}"; do
-    podman_args+=(--volume="$dir:/workdir/$(basename "$dir"):Z")
+    podman_args+=(--volume="$dir:/workdir/$(basename "$dir"):z")
   done
 
   podman_args+=(
@@ -108,11 +109,8 @@ if ! podman container inspect "$workspace" &> /dev/null; then
     fi
   done
 
-  podman_args+=(
-    "$pullspec"
-  )
-
-  podman run "${podman_args[@]}" "$workspace"
+  podman run "${podman_args[@]}" "$pullspec" "$workspace"
+  sleep 1
 fi
 
 podman exec -it "$workspace" tmux attach-session -t "$workspace"
