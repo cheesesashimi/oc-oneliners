@@ -1,33 +1,52 @@
 #!/usr/bin/env bash
 
-# This script is the entrypoint for my Claude Code environment. It uses the AI
-# workspace image that I build daily in GitHub Actions which contains Claude
-# Code as well as my usual tool assortment. However, any image which contains
-# the Claude Code CLI (along with any other desired tools) should work as well.
-# My AI workspace image is a bit large, clocking in at around 5 GB as of this
-# writing.
+# Unified entrypoint for Claude Code or OpenCode AI sandbox environments.
+# Uses the AI workspace image built daily in GitHub Actions.
 #
-# I purposely do not use Toolbox for this as I don't want Claude to have
-# unfettered access to my homedir. It will mount the provided host_workdir into
-# the container under /workdir.
+# I purposely do not use Toolbox for this as I don't want the AI to have
+# unfettered access to my homedir. It will mount the provided host_workdir(s)
+# into the container under /workdir.
 #
 # This script will also conditionally check for the presence of a kubeconfig
 # file in the workdir root and if one is found, will set the KUBECONFIG env var
 # to point to it and mount it into the container.
 
 # To use:
-# 1. Run this script with workspace name (optional, defaults to "workspace")
-#    followed by one or more host workdirs to mount.
-# 2. The script will pull the image and run it in interactive mode,
-#    setting up everything necessary for it to work.
-# Example: ./enter-claude-skills-env.sh myworkspace /path/to/dir1 /path/to/dir2
+# 1. Specify the AI tool as the first argument: "claude" or "opencode"
+# 2. Provide a workspace name.
+# 3. Provide one or more host workdirs to mount.
+# Example: ./enter-ai-sandbox.sh claude myworkspace /path/to/dir1 /path/to/dir2
+# Example: ./enter-ai-sandbox.sh opencode myworkspace /path/to/dir1
 
-set -xeuo
+set -xeuo pipefail
+
+usage() {
+  echo "Usage: $0 <claude|opencode> [workspace_name] <host_workdir1> [host_workdir2] ..."
+  exit 1
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+fi
+
+ai_tool="${1,,}"
+shift
+
+case "$ai_tool" in
+claude | opencode) ;;
+*)
+  echo "Unknown AI tool: '$ai_tool'. Must be 'claude' or 'opencode'."
+  usage
+  ;;
+esac
 
 pullspec="quay.io/zzlotnik/toolbox:ai-helpers-fedora-44"
+CONTAINER_HOME="/home/claude"
+GCP_PROJECT_ID="itpc-gcp-core-pe-eng-claude"
+GCP_VERTEX_REGION="global"
 workspace="${1:-workspace}"
-workspace="${workspace/claude-/}"
-workspace="claude-${workspace}"
+workspace="${workspace/${ai_tool}-/}"
+workspace="${ai_tool}-${workspace}"
 
 # Collect all remaining arguments as host workdirs
 shift
@@ -35,8 +54,7 @@ host_workdirs=("$@")
 
 if [[ ${#host_workdirs[@]} -eq 0 ]]; then
   echo "No host workdir provided"
-  echo "Usage: $0 [workspace_name] <host_workdir1> [host_workdir2] ..."
-  exit 1
+  usage
 fi
 
 # Validate that all provided directories exist
@@ -52,8 +70,6 @@ if [[ ! -f "$HOME/.config/gcloud/application_default_credentials.json" ]]; then
   exit 1
 fi
 
-# "$HOME/Repos/oc-oneliners/start-jira-mcp-server.sh"
-
 if ! podman container inspect "$workspace" &>/dev/null; then
   if [[ "$pullspec" != *"localhost"* ]]; then
     podman pull "$pullspec"
@@ -61,6 +77,7 @@ if ! podman container inspect "$workspace" &>/dev/null; then
 
   # Set the primary workdir to the first directory provided
   primary_workdir="${host_workdirs[0]}"
+
   podman_args=(
     --detach
     --rm
@@ -74,17 +91,35 @@ if ! podman container inspect "$workspace" &>/dev/null; then
     --name "$workspace"
     --network=host
     --workdir="/workdir/$(basename "$primary_workdir")"
-    --volume="$HOME/.config/gcloud:/home/claude/.config/gcloud:z,U"
-    --volume="$HOME/Repos/oc-oneliners/claude-entrypoint.sh:/claude-entrypoint.sh:z"
-    --env "CLAUDE_CODE_USE_VERTEX=1"
-    --env "CLOUD_ML_REGION=global"
-    --env "ANTHROPIC_VERTEX_PROJECT_ID=itpc-gcp-core-pe-eng-claude"
+    --volume="$HOME/.config/gcloud:${CONTAINER_HOME}/.config/gcloud:z,U"
     --env "JIRA_URL=https://redhat.atlassian.net"
     --env "JIRA_USER=zzlotnik@redhat.com"
     --env "JIRA_API_TOKEN=$(cat "$HOME/.creds/zzlotnik-jira-cloud-api-key")"
     --env "GH_TOKEN=$(cat "$HOME/.creds/gh-readonly-token")"
-    --entrypoint=/claude-entrypoint.sh
+    --env "LANG=en_US.UTF-8"
+    --env "LC_ALL=en_US.UTF-8"
+    --env "AI_TOOL=${ai_tool}"
   )
+
+  # Conditionally mount ~/.config/gws if it exists
+  if [[ -d "$HOME/.config/gws" ]]; then
+    podman_args+=(--volume="$HOME/.config/gws:${CONTAINER_HOME}/.config/gws:z,U")
+  fi
+
+  # Tool-specific environment variables and entrypoint
+  if [[ "$ai_tool" == "claude" ]]; then
+    podman_args+=(
+      --env "CLAUDE_CODE_USE_VERTEX=1"
+      --env "CLOUD_ML_REGION=${GCP_VERTEX_REGION}"
+      --env "ANTHROPIC_VERTEX_PROJECT_ID=${GCP_PROJECT_ID}"
+    )
+  else
+    podman_args+=(
+      --env "GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}"
+      --env "VERTEX_LOCATION=${GCP_VERTEX_REGION}"
+      --env "GOOGLE_APPLICATION_CREDENTIALS=${CONTAINER_HOME}/.config/gcloud/application_default_credentials.json"
+    )
+  fi
 
   # Mount all provided workdirs
   for dir in "${host_workdirs[@]}"; do
@@ -113,7 +148,7 @@ if ! podman container inspect "$workspace" &>/dev/null; then
   done
 
   if [[ -n "$registry_auth_file" ]]; then
-    podman_args+=(--volume="$registry_auth_file:/home/claude/.docker/config.json:z")
+    podman_args+=(--volume="$registry_auth_file:${CONTAINER_HOME}/.docker/config.json:z")
   fi
 
   if podman container exists "jira-mcp-server"; then
