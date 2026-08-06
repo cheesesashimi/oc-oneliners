@@ -10,18 +10,30 @@
 # This script will also conditionally check for the presence of a kubeconfig
 # file in the workdir root and if one is found, will set the KUBECONFIG env var
 # to point to it and mount it into the container.
+#
+# Three backends are supported:
+#   claude              - Claude Code via GCP Vertex AI
+#   opencode-vertex     - OpenCode via GCP Vertex AI
+#   opencode-modelscorp - OpenCode via Models Corp (APIcast) API keys
+#                         API keys are read from ~/.creds/apikeys.txt
+#                         (format: "provider-id apikey" one per line).
+#                         Provider IDs are matched against those in
+#                         ~/.creds/opencode.json and the corresponding env vars
+#                         (as specified by {env:...} references in the config)
+#                         are injected into the container via --env arguments.
 
 # To use:
-# 1. Specify the AI tool as the first argument: "claude" or "opencode"
+# 1. Specify the backend as the first argument.
 # 2. Provide a workspace name.
 # 3. Provide one or more host workdirs to mount.
-# Example: ./enter-ai-sandbox.sh claude myworkspace /path/to/dir1 /path/to/dir2
-# Example: ./enter-ai-sandbox.sh opencode myworkspace /path/to/dir1
+# Example: ./start-ai-sandbox-session.sh claude myworkspace /path/to/dir1 /path/to/dir2
+# Example: ./start-ai-sandbox-session.sh opencode-vertex myworkspace /path/to/dir1
+# Example: ./start-ai-sandbox-session.sh opencode-modelscorp myworkspace /path/to/dir1
 
-set -xeuo pipefail
+set -euo pipefail
 
 usage() {
-  echo "Usage: $0 <claude|opencode> [workspace_name] <host_workdir1> [host_workdir2] ..."
+  echo "Usage: $0 <claude|opencode-vertex|opencode-modelscorp> [workspace_name] <host_workdir1> [host_workdir2] ..."
   exit 1
 }
 
@@ -29,13 +41,13 @@ if [[ $# -lt 1 ]]; then
   usage
 fi
 
-ai_tool="${1,,}"
+backend="${1,,}"
 shift
 
-case "$ai_tool" in
-claude | opencode) ;;
+case "$backend" in
+claude | opencode-vertex | opencode-modelscorp) ;;
 *)
-  echo "Unknown AI tool: '$ai_tool'. Must be 'claude' or 'opencode'."
+  echo "Unknown backend: '$backend'. Must be 'claude', 'opencode-vertex', or 'opencode-modelscorp'."
   usage
   ;;
 esac
@@ -44,12 +56,36 @@ pullspec="quay.io/zzlotnik/toolbox:ai-helpers-fedora-44"
 CONTAINER_HOME="/home/claude"
 GCP_PROJECT_ID="itpc-gcp-core-pe-eng-claude"
 GCP_VERTEX_REGION="global"
-workspace="${1:-workspace}"
-workspace="${workspace/${ai_tool}-/}"
-workspace="${ai_tool}-${workspace}"
+
+# Derive workspace name and prefix based on backend.
+# If the next argument looks like a directory path (starts with / or ./), treat
+# it as the first workdir and fall back to a default workspace name.
+if [[ $# -ge 1 && "${1}" != /* && "${1}" != ./* ]]; then
+  workspace="${1}"
+  shift
+else
+  workspace="workspace"
+fi
+
+case "$backend" in
+claude)
+  workspace="${workspace/claude-/}"
+  workspace="claude-${workspace}"
+  ai_tool="claude"
+  ;;
+opencode-vertex)
+  workspace="${workspace/opencode-/}"
+  workspace="opencode-${workspace}"
+  ai_tool="opencode"
+  ;;
+opencode-modelscorp)
+  workspace="${workspace/opencode-modelscorp-/}"
+  workspace="opencode-modelscorp-${workspace}"
+  ai_tool="opencode"
+  ;;
+esac
 
 # Collect all remaining arguments as host workdirs
-shift
 host_workdirs=("$@")
 
 if [[ ${#host_workdirs[@]} -eq 0 ]]; then
@@ -65,9 +101,49 @@ for dir in "${host_workdirs[@]}"; do
   fi
 done
 
-if [[ ! -f "$HOME/.config/gcloud/application_default_credentials.json" ]]; then
-  echo "$HOME/.config/gcloud/application_default_credentials.json does not exist, exiting"
-  exit 1
+# --- Backend-specific credential pre-flight ---
+api_key_env_args=()
+
+if [[ "$backend" == "claude" || "$backend" == "opencode-vertex" ]]; then
+  if [[ ! -f "$HOME/.config/gcloud/application_default_credentials.json" ]]; then
+    echo "$HOME/.config/gcloud/application_default_credentials.json does not exist, exiting"
+    exit 1
+  fi
+else
+  # opencode-modelscorp
+  OPENCODE_CONFIG="$HOME/.creds/opencode.json"
+  APIKEYS_FILE="$HOME/.creds/apikeys.txt"
+
+  if [[ ! -f "$OPENCODE_CONFIG" ]]; then
+    echo "$OPENCODE_CONFIG does not exist, exiting"
+    exit 1
+  fi
+
+  if [[ ! -f "$APIKEYS_FILE" ]]; then
+    echo "$APIKEYS_FILE does not exist, exiting"
+    exit 1
+  fi
+
+  # Build a map of apicast-hostname-prefix -> env var name by parsing opencode.json.
+  # The hostname prefix is the portion of the baseURL before "--apicast-production",
+  # which matches the provider ID format used in apikeys.txt.
+  declare -A provider_env_map
+  while IFS=$'\t' read -r hostname_prefix env_var; do
+    provider_env_map["$hostname_prefix"]="$env_var"
+  done < <(jq -r '.provider | to_entries[] |
+    [
+      (.value.options.baseURL | split("--")[0] | ltrimstr("https://")),
+      (.value.options.apiKey | match("\\{env:([^}]+)\\}") | .captures[0].string)
+    ] | @tsv' "$OPENCODE_CONFIG")
+
+  while IFS=' ' read -r provider_id api_key; do
+    [[ -z "$provider_id" || "$provider_id" == \#* ]] && continue
+    if [[ -n "${provider_env_map[$provider_id]+_}" ]]; then
+      api_key_env_args+=(--env "${provider_env_map[$provider_id]}=${api_key}")
+    else
+      echo "Warning: no env var mapping found for provider '$provider_id', skipping" >&2
+    fi
+  done <"$APIKEYS_FILE"
 fi
 
 if ! podman container inspect "$workspace" &>/dev/null; then
@@ -91,7 +167,6 @@ if ! podman container inspect "$workspace" &>/dev/null; then
     --name "$workspace"
     --network=host
     --workdir="/workdir/$(basename "$primary_workdir")"
-    --volume="$HOME/.config/gcloud:${CONTAINER_HOME}/.config/gcloud:z,U"
     --env "JIRA_URL=https://redhat.atlassian.net"
     --env "JIRA_USER=zzlotnik@redhat.com"
     --env "JIRA_API_TOKEN=$(cat "$HOME/.creds/zzlotnik-jira-cloud-api-key")"
@@ -101,24 +176,45 @@ if ! podman container inspect "$workspace" &>/dev/null; then
     --env "AI_TOOL=${ai_tool}"
   )
 
-  # Conditionally mount ~/.config/gws if it exists
-  if [[ -d "$HOME/.config/gws" ]]; then
-    podman_args+=(--volume="$HOME/.config/gws:${CONTAINER_HOME}/.config/gws:z,U")
+  trust_anchor_dir_mounted=false
+  trust_anchor_dir="/etc/pki/ca-trust/source/anchors"
+  if [[ -d "/run/host/$trust_anchor_dir" ]]; then
+    podman_args+=(--volume="/run/host/${trust_anchor_dir}:${trust_anchor_dir}:ro")
+    trust_anchor_dir_mounted=true
+  elif [[ -d "$trust_anchor_dir" ]]; then
+    podman_args+=(--volume="${trust_anchor_dir}:${trust_anchor_dir}:ro")
+    trust_anchor_dir_mounted=true
   fi
 
-  # Tool-specific environment variables and entrypoint
-  if [[ "$ai_tool" == "claude" ]]; then
+  # Backend-specific env vars, volume mounts, and options
+  case "$backend" in
+  claude)
     podman_args+=(
       --env "CLAUDE_CODE_USE_VERTEX=1"
       --env "CLOUD_ML_REGION=${GCP_VERTEX_REGION}"
       --env "ANTHROPIC_VERTEX_PROJECT_ID=${GCP_PROJECT_ID}"
+      --volume="$HOME/.config/gcloud:${CONTAINER_HOME}/.config/gcloud:z,U"
     )
-  else
+    ;;
+  opencode-vertex)
     podman_args+=(
       --env "GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}"
       --env "VERTEX_LOCATION=${GCP_VERTEX_REGION}"
       --env "GOOGLE_APPLICATION_CREDENTIALS=${CONTAINER_HOME}/.config/gcloud/application_default_credentials.json"
+      --volume="$HOME/.config/gcloud:${CONTAINER_HOME}/.config/gcloud:z,U"
     )
+    ;;
+  opencode-modelscorp)
+    podman_args+=(
+      --volume "$HOME/.creds/opencode.json:${CONTAINER_HOME}/.config/opencode/opencode.json:z,U,ro"
+      "${api_key_env_args[@]}"
+    )
+    ;;
+  esac
+
+  # Conditionally mount ~/.config/gws if it exists
+  if [[ -d "$HOME/.config/gws" ]]; then
+    podman_args+=(--volume="$HOME/.config/gws:${CONTAINER_HOME}/.config/gws:z,U")
   fi
 
   # Mount all provided workdirs
@@ -167,6 +263,11 @@ if ! podman container inspect "$workspace" &>/dev/null; then
   done
 
   podman run "${podman_args[@]}" "$pullspec" "$workspace"
+
+  if [[ "$trust_anchor_dir_mounted" == "true" ]]; then
+    podman exec -u=root -it "$workspace" update-ca-trust
+  fi
+
   sleep 1
 fi
 
