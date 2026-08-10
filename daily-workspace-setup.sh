@@ -2,7 +2,7 @@
 
 maybePullKubeconfig() {
   server_ip="192.168.68.73"
-  if ping -c 1 -W 1 "$server_ip" &> /dev/null; then
+  if ping -c 1 -W 1 "$server_ip" &>/dev/null; then
     echo "Fetching KUBECONFIG"
     scp "zack@$server_ip":~/.openshift-installer/zzlotnik/auth/kubeconfig "$HOME/Repos/machine-config-operator"
   else
@@ -40,8 +40,8 @@ recreate() {
   pullspec="$2"
 
   if podman container exists "$container_name"; then
-    podman stop "$container_name";
-    podman rm "$container_name";
+    podman stop "$container_name"
+    podman rm "$container_name"
   fi
 
   time toolbox create --image "$pullspec" "$container_name"
@@ -50,31 +50,28 @@ recreate() {
 updateAllImages() {
   declare -A workspaces
 
-  workspaces[workspace]="quay.io/zzlotnik/toolbox:workspace-fedora-43"
-  workspaces[rust-workspace]="quay.io/zzlotnik/toolbox:workspace-rust-fedora-43"
-  workspaces[podman-dev-env]="quay.io/zzlotnik/toolbox:podman-dev-env"
+  workspaces["workspace"]="quay.io/zzlotnik/toolbox:workspace-fedora-44"
+  workspaces["rust-workspace"]="quay.io/zzlotnik/toolbox:workspace-rust-fedora-44"
+  workspaces["cloud-cli"]="quay.io/zzlotnik/toolbox:cloud-cli-fedora-44"
+  workspaces["podman-dev-env"]="quay.io/zzlotnik/toolbox:podman-dev-env"
 
   declare -A util_images
-  util_images[gcloud]="gcr.io/google.com/cloudsdktool/google-cloud-cli:stable"
-  util_images[aws]="public.ecr.aws/aws-cli/aws-cli"
-  util_images[ai-helpers]="quay.io/zzlotnik/toolbox:ai-helpers-fedora-43"
+  util_images["ai-helpers"]="quay.io/zzlotnik/toolbox:ai-helpers-fedora-44"
+  util_images["jira-mcp-server"]="ghcr.io/sooperset/mcp-atlassian:latest"
 
   for util_image in "${!util_images[@]}"; do
     pullspec="${util_images[$util_image]}"
-    maybePullNewImage "$util_image" "$pullspec"
+    maybePullNewImage "$util_image" "$pullspec" &
   done
 
   for workspace in "${!workspaces[@]}"; do
     pullspec="${workspaces[$workspace]}"
-    maybePullNewImage "$workspace" "$pullspec"
+    maybePullNewImage "$workspace" "$pullspec" &
   done
 
-  # for workspace in "${!workspaces[@]}"; do
-  #   pullspec="${workspaces[$workspace]}"
-  #   runStubContainer "$workspace" "$pullspec"
-  # done
+  wait
 
-  if [[ -f /run/.containerenv ]]; then
+  if [[ -f /run/.toolboxenv ]]; then
     echo "Cannot recreate workspaces from within workspace container"
     exit 1
   fi
