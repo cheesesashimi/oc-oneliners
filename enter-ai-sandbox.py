@@ -281,8 +281,8 @@ def build_podman_args(
     home = Path.home()
     primary_workdir = Path(cfg.host_workdirs[0])
 
-    jira_api_token = (home / ".creds/zzlotnik-jira-cloud-api-key").read_text().strip()
-    gh_token = (home / ".creds/gh-readonly-token").read_text().strip()
+#    jira_api_token = (home / ".creds/zzlotnik-jira-cloud-api-key").read_text().strip()
+#    gh_token = (home / ".creds/gh-readonly-token").read_text().strip()
 
     args: list[str] = [
         "--detach",
@@ -297,15 +297,25 @@ def build_podman_args(
         "--name", cfg.workspace,
         "--network=host",
         f"--workdir=/workdir/{primary_workdir.name}",
-        "--env", "JIRA_URL=https://redhat.atlassian.net",
-        "--env", "JIRA_USER=zzlotnik@redhat.com",
-        "--env", f"JIRA_API_TOKEN={jira_api_token}",
-        "--env", f"GH_TOKEN={gh_token}",
         "--env", "LANG=en_US.UTF-8",
         "--env", "LC_ALL=en_US.UTF-8",
         "--env", f"AI_TOOL={cfg.harness}",
         "--env", f"WITH_SKILLS={'true' if cfg.with_skills else 'false'}",
     ]
+
+    jira_api_token_file = (home / ".creds/zzlotnik-jira-cloud-api-key")
+    if jira_api_token_file.is_file():
+        args += [
+            "--env", "JIRA_URL=https://redhat.atlassian.net",
+            "--env", "JIRA_USER=zzlotnik@redhat.com",
+            "--env", f"JIRA_API_TOKEN={jira_api_token_file.read_text().strip()}",
+        ]
+
+    gh_token_file = (home / ".creds/gh-readonly-token")
+    if gh_token_file.is_file():
+        args += [
+            "--env", f"GH_TOKEN={gh_token_file.read_text().strip()}",
+        ]
 
     # CA trust anchor mount (Toolbox-aware)
     trust_anchor_dir = Path("/etc/pki/ca-trust/source/anchors")
@@ -319,6 +329,8 @@ def build_podman_args(
         args += ["--volume", f"{trust_anchor_dir}:{trust_anchor_dir}:ro"]
         trust_anchor_dir_mounted = True
 
+    system_prompt_file = (home / "Repos/oc-oneliners/opencodesystemprompt.md")
+
     # Harness + backend specific env vars and volume mounts
     if cfg.harness == "claude":
         # claude only supports vertex
@@ -328,6 +340,10 @@ def build_podman_args(
             "--env", f"ANTHROPIC_VERTEX_PROJECT_ID={GCP_PROJECT_ID}",
             "--volume", f"{home}/.config/gcloud:{CONTAINER_HOME}/.config/gcloud:z,U",
         ]
+
+        if system_prompt_file.is_file():
+            args += ["--volume", f"{system_prompt_file}:{CONTAINER_HOME}/.claude/CLAUDE.md:ro,z"]
+
         if not cfg.no_cache:
             args += ["--volume", f"claude-project-cache:{CONTAINER_HOME}/.claude/projects:z,U"]
     elif cfg.backend == "vertex":
@@ -337,6 +353,10 @@ def build_podman_args(
             "--env", f"GOOGLE_APPLICATION_CREDENTIALS={CONTAINER_HOME}/.config/gcloud/application_default_credentials.json",
             "--volume", f"{home}/.config/gcloud:{CONTAINER_HOME}/.config/gcloud:z,U",
         ]
+
+        if system_prompt_file.is_file():
+            args += ["--volume", f"{system_prompt_file}:{CONTAINER_HOME}/.config/opencode/AGENTS.md:ro,z"]
+
         if not cfg.no_cache:
             args += ["--volume", f"opencode-cache:{CONTAINER_HOME}/.local/share/opencode:z,U"]
     else:
