@@ -305,8 +305,6 @@ def build_podman_args(
         "--env", "LC_ALL=en_US.UTF-8",
         "--env", f"AI_TOOL={cfg.harness}",
         "--env", f"WITH_SKILLS={'true' if cfg.with_skills else 'false'}",
-        "--volume", f"{home}/Repos/containerfiles/ai-sandbox/ai-sandbox-entrypoint.sh:/entrypoint.sh:ro,z",
-        "--entrypoint", "/entrypoint.sh",
     ]
 
     # CA trust anchor mount (Toolbox-aware)
