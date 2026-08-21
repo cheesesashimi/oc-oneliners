@@ -85,7 +85,7 @@ def parse_args() -> SandboxConfig:
     Remaining positional args are treated as host workdirs.
     """
     ap = argparse.ArgumentParser(add_help=False)
-    ap.add_argument("--harness", choices=["opencode", "claude"], default="opencode")
+    ap.add_argument("--harness", choices=["opencode", "claude", "codex"], default="opencode")
     ap.add_argument("--backend", choices=["vertex", "modelscorp"], default="vertex")
     ap.add_argument("--pullspec", default=DEFAULT_PULLSPEC)
     ap.add_argument("--workspace", default=None)
@@ -118,6 +118,12 @@ def parse_args() -> SandboxConfig:
             "Use --backend vertex with --harness claude."
         )
 
+    if known.harness == "codex" and known.backend == "modelscorp":
+        sys.exit(
+            "Error: --harness codex is not compatible with --backend modelscorp. "
+            "Use --backend vertex with --harness codex."
+        )
+
     if not known.workspace:
         _usage(ap)
 
@@ -140,7 +146,7 @@ def _usage(ap: argparse.ArgumentParser) -> None:
     name = Path(sys.argv[0]).name
     print(
         f"Usage: {name} --workspace WORKSPACE <host_workdir1> [host_workdir2] ...\n"
-        "       [--harness opencode|claude] [--backend vertex|modelscorp] [--pullspec PULLSPEC]\n"
+        "       [--harness opencode|claude|codex] [--backend vertex|modelscorp] [--pullspec PULLSPEC]\n"
         f"       {name} --codeburn\n"
         "\n"
         "Defaults: --harness opencode --backend vertex"
@@ -155,6 +161,8 @@ def _usage(ap: argparse.ArgumentParser) -> None:
 def _workspace_prefix(harness: str, backend: str) -> str:
     if harness == "claude":
         return "claude-"
+    if harness == "codex":
+        return "codex-"
     # opencode
     if backend == "modelscorp":
         return "opencode-modelscorp-"
@@ -379,7 +387,7 @@ def build_podman_args(
     # Registry auth file
     auth_file = find_registry_auth()
     if auth_file is not None:
-        args += ["--volume", f"{auth_file}:{CONTAINER_HOME}/.docker/config.json:z"]
+        args += ["--volume", f"{auth_file}:{CONTAINER_HOME}/.docker/config.json:z,ro"]
 
     # Kubeconfig injection (first match wins)
     for d in cfg.host_workdirs:
