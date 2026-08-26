@@ -13,7 +13,7 @@
 #
 # Flags:
 #   --harness      opencode (default) | claude
-#   --backend      vertex (default)   | modelscorp
+#   --backend      vertex (default)   | modelscorp | openai
 #   --pullspec     override the container image pullspec
 #   --codeburn     run the codeburn tool to analyze AI spend (bypasses normal sandbox)
 #   --with-skills  keep built-in SKILL.md files in place (default: remove them)
@@ -22,8 +22,13 @@
 # Valid combinations:
 #   --harness opencode --backend vertex      - OpenCode via GCP Vertex AI
 #   --harness opencode --backend modelscorp  - OpenCode via Models Corp (APIcast)
+#   --harness opencode --backend openai     - OpenCode via OpenAI
 #   --harness claude   --backend vertex      - Claude Code via GCP Vertex AI
 #   --harness claude   --backend modelscorp  - INVALID
+#   --harness claude   --backend openai     - INVALID
+#   --harness codex    --backend vertex      - Codex via GCP Vertex AI
+#   --harness codex    --backend openai     - Codex via OpenAI
+#   --harness codex    --backend modelscorp  - INVALID
 #
 # For modelscorp, API keys are read from ~/.creds/apikeys.txt
 # (format: "provider-id apikey" one per line) and env var names from
@@ -86,7 +91,7 @@ def parse_args() -> SandboxConfig:
     """
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--harness", choices=["opencode", "claude", "codex"], default="opencode")
-    ap.add_argument("--backend", choices=["vertex", "modelscorp"], default="vertex")
+    ap.add_argument("--backend", choices=["vertex", "modelscorp", "openai"], default="vertex")
     ap.add_argument("--pullspec", default=DEFAULT_PULLSPEC)
     ap.add_argument("--workspace", default=None)
     ap.add_argument("--codeburn", action="store_true", default=False)
@@ -112,16 +117,16 @@ def parse_args() -> SandboxConfig:
         )
 
     # Validate combination
-    if known.harness == "claude" and known.backend == "modelscorp":
+    if known.harness == "claude" and known.backend != "vertex":
         sys.exit(
-            "Error: --harness claude is not compatible with --backend modelscorp. "
+            f"Error: --harness claude is not compatible with --backend {known.backend}. "
             "Use --backend vertex with --harness claude."
         )
 
     if known.harness == "codex" and known.backend == "modelscorp":
         sys.exit(
             "Error: --harness codex is not compatible with --backend modelscorp. "
-            "Use --backend vertex with --harness codex."
+            "Use --backend vertex or --backend openai with --harness codex."
         )
 
     if not known.workspace:
@@ -146,7 +151,7 @@ def _usage(ap: argparse.ArgumentParser) -> None:
     name = Path(sys.argv[0]).name
     print(
         f"Usage: {name} --workspace WORKSPACE <host_workdir1> [host_workdir2] ...\n"
-        "       [--harness opencode|claude|codex] [--backend vertex|modelscorp] [--pullspec PULLSPEC]\n"
+        "       [--harness opencode|claude|codex] [--backend vertex|modelscorp|openai] [--pullspec PULLSPEC]\n"
         f"       {name} --codeburn\n"
         "\n"
         "Defaults: --harness opencode --backend vertex"
@@ -162,10 +167,14 @@ def _workspace_prefix(harness: str, backend: str) -> str:
     if harness == "claude":
         return "claude-"
     if harness == "codex":
+        if backend == "openai":
+            return "codex-openai-"
         return "codex-"
     # opencode
     if backend == "modelscorp":
         return "opencode-modelscorp-"
+    if backend == "openai":
+        return "opencode-openai-"
     return "opencode-"
 
 
@@ -196,7 +205,7 @@ def preflight_credentials(cfg: SandboxConfig) -> list[str]:
     """Validate required credential files.
 
     Returns a flat list of ['--env', 'VAR=value', ...] args for the
-    modelscorp backend; empty list for vertex.
+    modelscorp or openai backend; empty list for vertex.
     """
     home = Path.home()
 
@@ -205,6 +214,13 @@ def preflight_credentials(cfg: SandboxConfig) -> list[str]:
         if not adc.is_file():
             sys.exit(f"{adc} does not exist, exiting")
         return []
+
+    if cfg.backend == "openai":
+        openai_key_file = home / ".creds/openai-api-key"
+        if not openai_key_file.is_file():
+            sys.exit(f"{openai_key_file} does not exist, exiting")
+        api_key = openai_key_file.read_text().strip()
+        return ["--env", f"OPENAI_API_KEY={api_key}"]
 
     # modelscorp
     opencode_config = home / ".creds/opencode.json"
@@ -367,6 +383,15 @@ def build_podman_args(
 
         if not cfg.no_cache:
             args += ["--volume", f"opencode-cache:{CONTAINER_HOME}/.local/share/opencode:z,U"]
+    elif cfg.backend == "openai":
+        args += api_key_env_args
+
+        if cfg.harness == "opencode":
+            if system_prompt_file.is_file():
+                args += ["--volume", f"{system_prompt_file}:{CONTAINER_HOME}/.config/opencode/AGENTS.md:ro,z"]
+
+            if not cfg.no_cache:
+                args += ["--volume", f"opencode-cache:{CONTAINER_HOME}/.local/share/opencode:z,U"]
     else:
         # opencode + modelscorp
         args += [
