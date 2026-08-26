@@ -12,22 +12,23 @@
 # to point to it and mount it into the container.
 #
 # Flags:
-#   --harness      opencode (default) | claude
-#   --backend      vertex (default)   | modelscorp | openai
+#   --harness      opencode (default) | claude | codex
+#   --backend      openai (default)   | vertex | modelscorp
 #   --pullspec     override the container image pullspec
+#   --entrypoint   override entrypoint with an absolute path from the host (mounted to /entrypoint)
 #   --codeburn     run the codeburn tool to analyze AI spend (bypasses normal sandbox)
 #   --with-skills  keep built-in SKILL.md files in place (default: remove them)
 #   --no-cache     skip mounting the claude-project-cache and opencode-cache named volumes
 #
 # Valid combinations:
+#   --harness opencode --backend openai     - OpenCode via OpenAI (default)
 #   --harness opencode --backend vertex      - OpenCode via GCP Vertex AI
 #   --harness opencode --backend modelscorp  - OpenCode via Models Corp (APIcast)
-#   --harness opencode --backend openai     - OpenCode via OpenAI
-#   --harness claude   --backend vertex      - Claude Code via GCP Vertex AI
+#   --harness claude   --backend vertex      - Claude Code via GCP Vertex AI (auto-selected)
 #   --harness claude   --backend modelscorp  - INVALID
 #   --harness claude   --backend openai     - INVALID
-#   --harness codex    --backend vertex      - Codex via GCP Vertex AI
-#   --harness codex    --backend openai     - Codex via OpenAI
+#   --harness codex    --backend openai     - Codex via OpenAI (auto-selected)
+#   --harness codex    --backend vertex      - INVALID
 #   --harness codex    --backend modelscorp  - INVALID
 #
 # For modelscorp, API keys are read from ~/.creds/apikeys.txt
@@ -46,6 +47,7 @@
 # Example: ./enter-ai-sandbox.py --codeburn
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -54,139 +56,42 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants & Declarative Mappings
 # ---------------------------------------------------------------------------
 
 DEFAULT_PULLSPEC = "quay.io/zzlotnik/toolbox:ai-helpers-fedora-44"
+DEFAULT_CODEBURN_PULLSPEC = "localhost/codeburn:latest"
 CONTAINER_HOME = Path("/home/claude")
 GCP_PROJECT_ID = "*****"
 GCP_VERTEX_REGION = "global"
 
+VALID_COMBINATIONS: set[tuple[str, str]] = {
+    ("opencode", "vertex"),
+    ("opencode", "modelscorp"),
+    ("opencode", "openai"),
+    ("claude", "vertex"),
+    ("codex", "openai"),
+}
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-@dataclass
-class SandboxConfig:
-    harness: str
-    backend: str
-    workspace: str
-    pullspec: str
-    host_workdirs: list[str]
-    codeburn: bool
-    with_skills: bool
-    no_cache: bool
-
-
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
-
-def parse_args() -> SandboxConfig:
-    """Parse command-line arguments and return a SandboxConfig.
-
-    All named flags may appear anywhere among the arguments.
-    Remaining positional args are treated as host workdirs.
-    """
-    ap = argparse.ArgumentParser(add_help=False)
-    ap.add_argument("--harness", choices=["opencode", "claude", "codex"], default="opencode")
-    ap.add_argument("--backend", choices=["vertex", "modelscorp", "openai"], default="vertex")
-    ap.add_argument("--pullspec", default=DEFAULT_PULLSPEC)
-    ap.add_argument("--workspace", default=None)
-    ap.add_argument("--codeburn", action="store_true", default=False)
-    ap.add_argument("--with-skills", action="store_true", default=False)
-    ap.add_argument("--no-cache", action="store_true", default=False)
-
-    known, remainder = ap.parse_known_args()
-
-    pullspec = known.pullspec
-    if known.codeburn and known.pullspec == DEFAULT_PULLSPEC:
-        pullspec = DEFAULT_CODEBURN_PULLSPEC
-
-    if known.codeburn:
-        return SandboxConfig(
-            harness=known.harness,
-            backend=known.backend,
-            workspace=known.workspace or "",
-            pullspec=pullspec,
-            host_workdirs=[],
-            codeburn=True,
-            with_skills=known.with_skills,
-            no_cache=known.no_cache,
-        )
-
-    # Validate combination
-    if known.harness == "claude" and known.backend != "vertex":
-        sys.exit(
-            f"Error: --harness claude is not compatible with --backend {known.backend}. "
-            "Use --backend vertex with --harness claude."
-        )
-
-    if known.harness == "codex" and known.backend == "modelscorp":
-        sys.exit(
-            "Error: --harness codex is not compatible with --backend modelscorp. "
-            "Use --backend vertex or --backend openai with --harness codex."
-        )
-
-    if not known.workspace:
-        _usage(ap)
-
-    if not remainder:
-        _usage(ap)
-
-    return SandboxConfig(
-        harness=known.harness,
-        backend=known.backend,
-        workspace=known.workspace,
-        pullspec=pullspec,
-        host_workdirs=remainder,
-        codeburn=False,
-        with_skills=known.with_skills,
-        no_cache=known.no_cache,
-    )
-
-
-def _usage(ap: argparse.ArgumentParser) -> None:
-    name = Path(sys.argv[0]).name
-    print(
-        f"Usage: {name} --workspace WORKSPACE <host_workdir1> [host_workdir2] ...\n"
-        "       [--harness opencode|claude|codex] [--backend vertex|modelscorp|openai] [--pullspec PULLSPEC]\n"
-        f"       {name} --codeburn\n"
-        "\n"
-        "Defaults: --harness opencode --backend vertex"
-    )
-    sys.exit(1)
+WORKSPACE_PREFIX_MAP: dict[tuple[str, str], str] = {
+    ("claude", "vertex"): "claude-",
+    ("codex", "openai"): "codex-openai-",
+    ("opencode", "vertex"): "opencode-",
+    ("opencode", "modelscorp"): "opencode-modelscorp-",
+    ("opencode", "openai"): "opencode-openai-",
+}
 
 
 # ---------------------------------------------------------------------------
-# Workspace name normalisation
+# File & Environment Helpers
 # ---------------------------------------------------------------------------
 
-def _workspace_prefix(harness: str, backend: str) -> str:
-    if harness == "claude":
-        return "claude-"
-    if harness == "codex":
-        if backend == "openai":
-            return "codex-openai-"
-        return "codex-"
-    # opencode
-    if backend == "modelscorp":
-        return "opencode-modelscorp-"
-    if backend == "openai":
-        return "opencode-openai-"
-    return "opencode-"
+def _require_file(path: Path) -> Path:
+    """Ensure file exists or abort execution."""
+    if not path.is_file():
+        sys.exit(f"{path} does not exist, exiting")
+    return path
 
-
-def normalize_workspace(cfg: SandboxConfig) -> str:
-    """Strip any existing prefix then re-add it (idempotency guard)."""
-    prefix = _workspace_prefix(cfg.harness, cfg.backend)
-    return prefix + cfg.workspace.removeprefix(prefix)
-
-
-# ---------------------------------------------------------------------------
-# Credential preflight
-# ---------------------------------------------------------------------------
 
 def _read_kv_file(path: Path) -> dict[str, str]:
     """Parse a whitespace-separated key-value file, ignoring blank lines and comments."""
@@ -201,58 +106,42 @@ def _read_kv_file(path: Path) -> dict[str, str]:
     return result
 
 
-def preflight_credentials(cfg: SandboxConfig) -> list[str]:
-    """Validate required credential files.
-
-    Returns a flat list of ['--env', 'VAR=value', ...] args for the
-    modelscorp or openai backend; empty list for vertex.
-    """
-    home = Path.home()
-
-    if cfg.backend == "vertex":
-        adc = home / ".config/gcloud/application_default_credentials.json"
-        if not adc.is_file():
-            sys.exit(f"{adc} does not exist, exiting")
-        return []
-
-    if cfg.backend == "openai":
-        openai_key_file = home / ".creds/openai-api-key"
-        if not openai_key_file.is_file():
-            sys.exit(f"{openai_key_file} does not exist, exiting")
-        api_key = openai_key_file.read_text().strip()
-        return ["--env", f"OPENAI_API_KEY={api_key}"]
-
-    # modelscorp
-    opencode_config = home / ".creds/opencode.json"
-    apikeys_file = home / ".creds/apikeys.txt"
-    envvars_file = home / ".creds/envvars.txt"
-
-    for f in (opencode_config, apikeys_file, envvars_file):
-        if not f.is_file():
-            sys.exit(f"{f} does not exist, exiting")
-
-    # Build provider-id -> env-var-name map from envvars.txt.
-    provider_env_map = _read_kv_file(envvars_file)
-
-    # Join with apikeys.txt on provider-id.
-    api_keys = _read_kv_file(apikeys_file)
-
-    env_args: list[str] = []
-    for provider_id, api_key in api_keys.items():
-        if provider_id in provider_env_map:
-            env_args += ["--env", f"{provider_env_map[provider_id]}={api_key}"]
-        else:
-            print(
-                f"Warning: no env var mapping found for provider '{provider_id}', skipping",
-                file=sys.stderr,
-            )
-
-    return env_args
+def _add_file_secret_env(
+    args: list[str],
+    file_path: Path,
+    env_var: str,
+    extra_env: dict[str, str] | None = None,
+) -> None:
+    """Append environment variable(s) if secret file exists."""
+    if file_path.is_file():
+        if extra_env:
+            for k, v in extra_env.items():
+                args += ["--env", f"{k}={v}"]
+        args += ["--env", f"{env_var}={file_path.read_text().strip()}"]
 
 
-# ---------------------------------------------------------------------------
-# Registry auth file discovery
-# ---------------------------------------------------------------------------
+def _get_trust_anchor_mount() -> tuple[list[str], bool]:
+    """Resolve host PKI trust anchor directory (Toolbox vs native host)."""
+    trust_anchor_dir = Path("/etc/pki/ca-trust/source/anchors")
+    toolbox_path = Path("/run/host") / trust_anchor_dir.relative_to("/")
+    if toolbox_path.is_dir():
+        return ["--volume", f"{toolbox_path}:{trust_anchor_dir}:ro"], True
+    if trust_anchor_dir.is_dir():
+        return ["--volume", f"{trust_anchor_dir}:{trust_anchor_dir}:ro"], True
+    return [], False
+
+
+def _get_kubeconfig_mount(host_workdirs: list[str]) -> list[str]:
+    """Find and return volume mount args for the first discovered kubeconfig file."""
+    for d in host_workdirs:
+        kubeconfig = Path(d) / "kubeconfig"
+        if kubeconfig.is_file():
+            return [
+                "--env", "KUBECONFIG=/kubeconfig",
+                "--volume", f"{kubeconfig}:/kubeconfig:z",
+            ]
+    return []
+
 
 def find_registry_auth() -> Path | None:
     """Return the first existing container registry auth file, or None."""
@@ -277,162 +166,327 @@ def find_registry_auth() -> Path | None:
     return next((p for p in candidates if p.is_file()), None)
 
 
-# ---------------------------------------------------------------------------
-# Container helpers
-# ---------------------------------------------------------------------------
-
-def container_exists(name: str) -> bool:
+def is_container_running(name: str) -> bool:
+    """Check if container exists and is currently in the running state."""
     result = subprocess.run(
-        ["podman", "container", "inspect", name],
+        ["podman", "container", "inspect", "--format", "{{.State.Running}}", name],
         capture_output=True,
+        text=True,
     )
-    return result.returncode == 0
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def pull_image_if_needed(pullspec: str) -> None:
+    """Pull container image if pullspec is not local."""
+    if "localhost" not in pullspec:
+        subprocess.run(["podman", "pull", pullspec], check=True)
 
 
 # ---------------------------------------------------------------------------
-# Main podman args builder
+# Sandbox Configuration Domain Model
 # ---------------------------------------------------------------------------
 
-def build_podman_args(
-    cfg: SandboxConfig,
-    api_key_env_args: list[str],
-) -> tuple[list[str], bool]:
-    """Build the full argument list for `podman run` (excluding the image and
-    workspace-name positional).
+@dataclass
+class SandboxConfig:
+    harness: str
+    backend: str
+    workspace: str
+    pullspec: str
+    host_workdirs: list[str]
+    codeburn: bool
+    with_skills: bool
+    no_cache: bool
+    entrypoint: str | None = None
 
-    Returns (args, trust_anchor_dir_mounted).
-    """
-    home = Path.home()
-    primary_workdir = Path(cfg.host_workdirs[0])
+    @property
+    def normalized_workspace(self) -> str:
+        """Strip any existing prefix then re-add it (idempotency guard)."""
+        prefix = WORKSPACE_PREFIX_MAP.get((self.harness, self.backend), f"{self.harness}-")
+        return prefix + self.workspace.removeprefix(prefix)
 
-#    jira_api_token = (home / ".creds/zzlotnik-jira-cloud-api-key").read_text().strip()
-#    gh_token = (home / ".creds/gh-readonly-token").read_text().strip()
+    @property
+    def system_prompt_target(self) -> Path:
+        """Target path inside container for system prompt file."""
+        if self.harness == "claude":
+            return CONTAINER_HOME / ".claude/CLAUDE.md"
+        if self.harness == "codex":
+            return CONTAINER_HOME / ".codex/AGENTS.md"
+        return CONTAINER_HOME / ".config/opencode/AGENTS.md"
 
-    args: list[str] = [
-        "--detach",
-        "--rm",
-        "--privileged",
-        "--uidmap", "1000:0:1",
-        "--uidmap", "0:1:1000",
-        "--uidmap", "1001:1001:65536",
-        "--gidmap", "1000:0:1",
-        "--gidmap", "0:1:1000",
-        "--gidmap", "1001:1001:65536",
-        "--name", cfg.workspace,
-        "--network=host",
-        f"--workdir=/workdir/{primary_workdir.name}",
-        "--env", "LANG=en_US.UTF-8",
-        "--env", "LC_ALL=en_US.UTF-8",
-        "--env", f"AI_TOOL={cfg.harness}",
-        "--env", f"WITH_SKILLS={'true' if cfg.with_skills else 'false'}",
-    ]
+    @property
+    def cache_volume_spec(self) -> str:
+        """Volume specification for persistent session cache."""
+        if self.harness == "claude":
+            return f"claude-project-cache:{CONTAINER_HOME}/.claude/projects:z,U"
+        return f"opencode-cache:{CONTAINER_HOME}/.local/share/opencode:z,U"
 
-    jira_api_token_file = (home / ".creds/zzlotnik-jira-cloud-api-key")
-    if jira_api_token_file.is_file():
-        args += [
-            "--env", "JIRA_URL=https://redhat.atlassian.net",
-            "--env", "JIRA_USER=zzlotnik@redhat.com",
-            "--env", f"JIRA_API_TOKEN={jira_api_token_file.read_text().strip()}",
-        ]
+    def validate(self) -> None:
+        """Validate workdir paths and entrypoint location on host."""
+        for d in self.host_workdirs:
+            if not Path(d).is_dir():
+                sys.exit(f"Error: Host workdir {d} does not exist")
 
-    gh_token_file = (home / ".creds/gh-readonly-token")
-    if gh_token_file.is_file():
-        args += [
-            "--env", f"GH_TOKEN={gh_token_file.read_text().strip()}",
-        ]
+        if self.entrypoint:
+            ep_path = Path(self.entrypoint)
+            if not ep_path.is_absolute():
+                sys.exit(f"Error: --entrypoint path must be absolute: {self.entrypoint}")
+            if not ep_path.is_file():
+                sys.exit(f"Error: Specified --entrypoint file does not exist: {self.entrypoint}")
 
-    # CA trust anchor mount (Toolbox-aware)
-    trust_anchor_dir = Path("/etc/pki/ca-trust/source/anchors")
-    toolbox_path = Path("/run/host") / trust_anchor_dir.relative_to("/")
-    trust_anchor_dir_mounted = False
+    def _get_auth_args(self) -> list[str]:
+        """Validate required credential files.
 
-    if toolbox_path.is_dir():
-        args += ["--volume", f"{toolbox_path}:{trust_anchor_dir}:ro"]
-        trust_anchor_dir_mounted = True
-    elif trust_anchor_dir.is_dir():
-        args += ["--volume", f"{trust_anchor_dir}:{trust_anchor_dir}:ro"]
-        trust_anchor_dir_mounted = True
+        Returns a flat list of ['--env', 'VAR=value', ...] args for the
+        modelscorp or openai backend; empty list for vertex.
+        """
+        # Backend-specific env vars and volume mounts
+        if self.harness == "claude":
+            return self._claude_auth_args()
+        elif self.backend == "vertex":
+            _require_file(Path.home() / ".config/gcloud/application_default_credentials.json")
+            return self._opencode_vertex_auth_args()
+        elif self.backend == "openai":
+            return self._openai_auth_args()
+        elif self.backend == "modelscorp":
+            return self._modelscorp_auth_args()
 
-    system_prompt_file = (home / "Repos/oc-oneliners/opencodesystemprompt.md")
+    def build_interactive_podman_args(self) -> tuple[list[str], bool]:
+        args, trust_anchor_dir_mounted = self._build_podman_args()
+        return ["-it"] + args, trust_anchor_dir_mounted
 
-    # Harness + backend specific env vars and volume mounts
-    if cfg.harness == "claude":
-        # claude only supports vertex
-        args += [
+    def build_detached_podman_args(self) -> tuple[list[str], bool]:
+        args, trust_anchor_dir_mounted = self._build_podman_args()
+        return ["--detach"] + args, trust_anchor_dir_mounted
+    
+    def _openai_auth_args(self) -> tuple[list[str]]:
+        home = Path.home()
+
+        openai_auth_file = home / ".creds/openai-auth.json"
+        if not openai_auth_file.is_file():
+            sys.exit(f"Error: Expected OpenAI auth file at {openai_auth_file}")
+
+        api_key_env_var_name = "OPENAI_API_KEY"
+        api_key = json.loads(openai_auth_file.read_text())[api_key_env_var_name]
+        args = ["--env", f"{api_key_env_var_name}={api_key}"]
+
+        if self.harness == "opencode":
+            return args
+
+        if self.harness == "codex":
+            return args + [
+                "--volume", f"{openai_auth_file}:{CONTAINER_HOME}/.codex/auth.json:ro,z"
+            ]
+
+    def _claude_auth_args(self) -> tuple[list[str]]:
+        return [
             "--env", "CLAUDE_CODE_USE_VERTEX=1",
             "--env", f"CLOUD_ML_REGION={GCP_VERTEX_REGION}",
             "--env", f"ANTHROPIC_VERTEX_PROJECT_ID={GCP_PROJECT_ID}",
-            "--volume", f"{home}/.config/gcloud:{CONTAINER_HOME}/.config/gcloud:z,U",
+            "--volume", f"{Path.home()}/.config/gcloud:{CONTAINER_HOME}/.config/gcloud:z,U",
         ]
 
-        if system_prompt_file.is_file():
-            args += ["--volume", f"{system_prompt_file}:{CONTAINER_HOME}/.claude/CLAUDE.md:ro,z"]
-
-        if not cfg.no_cache:
-            args += ["--volume", f"claude-project-cache:{CONTAINER_HOME}/.claude/projects:z,U"]
-    elif cfg.backend == "vertex":
-        args += [
+    def _opencode_vertex_auth_args(self) -> tuple[list[str]]:
+        return [
             "--env", f"GOOGLE_CLOUD_PROJECT={GCP_PROJECT_ID}",
             "--env", f"VERTEX_LOCATION={GCP_VERTEX_REGION}",
             "--env", f"GOOGLE_APPLICATION_CREDENTIALS={CONTAINER_HOME}/.config/gcloud/application_default_credentials.json",
-            "--volume", f"{home}/.config/gcloud:{CONTAINER_HOME}/.config/gcloud:z,U",
+            "--volume", f"{Path.home()}/.config/gcloud:{CONTAINER_HOME}/.config/gcloud:z,U",
         ]
 
-        if system_prompt_file.is_file():
-            args += ["--volume", f"{system_prompt_file}:{CONTAINER_HOME}/.config/opencode/AGENTS.md:ro,z"]
+    def _modelscorp_auth_args(self) -> tuple[list[str]]:
+        # modelscorp
+        _require_file(home / ".creds/opencode.json")
+        apikeys_file = _require_file(home / ".creds/apikeys.txt")
+        envvars_file = _require_file(home / ".creds/envvars.txt")
 
-        if not cfg.no_cache:
-            args += ["--volume", f"opencode-cache:{CONTAINER_HOME}/.local/share/opencode:z,U"]
-    elif cfg.backend == "openai":
-        args += api_key_env_args
+        provider_env_map = _read_kv_file(envvars_file)
+        api_keys = _read_kv_file(apikeys_file)
 
-        if cfg.harness == "opencode":
-            if system_prompt_file.is_file():
-                args += ["--volume", f"{system_prompt_file}:{CONTAINER_HOME}/.config/opencode/AGENTS.md:ro,z"]
+        env_args: list[str] = []
+        for provider_id, api_key in api_keys.items():
+            if provider_id in provider_env_map:
+                env_args += ["--env", f"{provider_env_map[provider_id]}={api_key}"]
+            else:
+                print(
+                    f"Warning: no env var mapping found for provider '{provider_id}', skipping",
+                    file=sys.stderr,
+                )
 
-            if not cfg.no_cache:
-                args += ["--volume", f"opencode-cache:{CONTAINER_HOME}/.local/share/opencode:z,U"]
-    else:
-        # opencode + modelscorp
-        args += [
+        return env_args + [
             "--volume", f"{home}/.creds/opencode.json:{CONTAINER_HOME}/.config/opencode/opencode.json:z,U,ro",
         ]
-        args += api_key_env_args
 
-    # Conditionally mount ~/.config/gws
-    gws_dir = home / ".config/gws"
-    if gws_dir.is_dir():
-        args += ["--volume", f"{gws_dir}:{CONTAINER_HOME}/.config/gws:z,U"]
+    def _build_podman_args(self) -> tuple[list[str], bool]:
+        """Build the full argument list for `podman run` (excluding image & workspace positionals).
 
-    # Mount all provided workdirs
-    for d in cfg.host_workdirs:
-        p = Path(d)
-        args += ["--volume", f"{p}:/workdir/{p.name}:z"]
+        Returns (args, trust_anchor_dir_mounted).
+        """
+        home = Path.home()
+        primary_workdir = Path(self.host_workdirs[0])
+        workspace_name = self.normalized_workspace
 
-    # Registry auth file
-    auth_file = find_registry_auth()
-    if auth_file is not None:
-        args += ["--volume", f"{auth_file}:{CONTAINER_HOME}/.docker/config.json:z,ro"]
+        args: list[str] = [
+            "--rm",
+            "--privileged",
+            "--uidmap", "1000:0:1",
+            "--uidmap", "0:1:1000",
+            "--uidmap", "1001:1001:65536",
+            "--gidmap", "1000:0:1",
+            "--gidmap", "0:1:1000",
+            "--gidmap", "1001:1001:65536",
+            "--name", workspace_name,
+            "--network=host",
+            f"--workdir=/workdir/{primary_workdir.name}",
+            "--env", "LANG=en_US.UTF-8",
+            "--env", "LC_ALL=en_US.UTF-8",
+            "--env", f"AI_TOOL={self.harness}",
+            "--env", f"WITH_SKILLS={'true' if self.with_skills else 'false'}",
+        ]
 
-    # Kubeconfig injection (first match wins)
-    for d in cfg.host_workdirs:
-        kubeconfig = Path(d) / "kubeconfig"
-        if kubeconfig.is_file():
+        # Optional secrets
+        _add_file_secret_env(
+            args,
+            home / ".creds/zzlotnik-jira-cloud-api-key",
+            "JIRA_API_TOKEN",
+            extra_env={
+                "JIRA_URL": "https://redhat.atlassian.net",
+                "JIRA_USER": "zzlotnik@redhat.com",
+            },
+        )
+        _add_file_secret_env(args, home / ".creds/gh-readonly-token", "GH_TOKEN")
+
+        # Entrypoint override flag
+        if self.entrypoint:
             args += [
-                "--env", "KUBECONFIG=/kubeconfig",
-                "--volume", f"{kubeconfig}:/kubeconfig:z",
+                "--volume", f"{self.entrypoint}:/entrypoint:z,ro",
+                "--entrypoint", "/entrypoint",
             ]
-            break
 
-    return args, trust_anchor_dir_mounted
+        # CA trust anchor mount
+        trust_anchor_args, trust_anchor_mounted = _get_trust_anchor_mount()
+        args += trust_anchor_args
+
+        # Common system prompt & cache volume mounts across all backends
+        system_prompt_file = home / "Repos/oc-oneliners/opencodesystemprompt.md"
+        if system_prompt_file.is_file():
+            args += ["--volume", f"{system_prompt_file}:{self.system_prompt_target}:ro,z"]
+
+        if not self.no_cache:
+            args += ["--volume", self.cache_volume_spec]
+
+        # Set up auth args.
+        args += self._get_auth_args()
+
+        # Conditionally mount ~/.config/gws
+        gws_dir = home / ".config/gws"
+        if gws_dir.is_dir():
+            args += ["--volume", f"{gws_dir}:{CONTAINER_HOME}/.config/gws:z,U"]
+
+        # Mount all provided host workdirs
+        for d in self.host_workdirs:
+            p = Path(d)
+            args += ["--volume", f"{p}:/workdir/{p.name}:z"]
+
+        # Registry auth file
+        auth_file = find_registry_auth()
+        if auth_file is not None:
+            args += ["--volume", f"{auth_file}:{CONTAINER_HOME}/.docker/config.json:z,ro"]
+
+        # Kubeconfig injection
+        args += _get_kubeconfig_mount(self.host_workdirs)
+
+        return args, trust_anchor_mounted
+
+
+# ---------------------------------------------------------------------------
+# Argument Parsing & CLI Interface
+# ---------------------------------------------------------------------------
+
+def parse_args() -> SandboxConfig:
+    """Parse command-line arguments and return a SandboxConfig."""
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--harness", choices=["opencode", "claude", "codex"], default="opencode")
+    ap.add_argument("--backend", choices=["vertex", "modelscorp", "openai"], default=None)
+    ap.add_argument("--pullspec", default=DEFAULT_PULLSPEC)
+    ap.add_argument("--workspace", default=None)
+    ap.add_argument("--entrypoint", default=None)
+    ap.add_argument("--codeburn", action="store_true", default=False)
+    ap.add_argument("--with-skills", action="store_true", default=False)
+    ap.add_argument("--no-cache", action="store_true", default=False)
+
+    known, remainder = ap.parse_known_args()
+
+    backend = known.backend
+    if backend is None:
+        if known.harness == "claude":
+            backend = "vertex"
+        elif known.harness == "codex":
+            backend = "openai"
+        else:
+            backend = "openai"
+
+    pullspec = known.pullspec
+    if known.codeburn and known.pullspec == DEFAULT_PULLSPEC:
+        pullspec = DEFAULT_CODEBURN_PULLSPEC
+
+    if known.codeburn:
+        return SandboxConfig(
+            harness=known.harness,
+            backend=backend,
+            workspace=known.workspace or "",
+            pullspec=pullspec,
+            host_workdirs=[],
+            codeburn=True,
+            with_skills=known.with_skills,
+            no_cache=known.no_cache,
+            entrypoint=known.entrypoint,
+        )
+
+    # Validate combination
+    if (known.harness, backend) not in VALID_COMBINATIONS:
+        sys.exit(
+            f"Error: --harness {known.harness} is not compatible with --backend {backend}."
+        )
+
+    if not known.workspace or not remainder:
+        _usage(ap)
+
+    cfg = SandboxConfig(
+        harness=known.harness,
+        backend=backend,
+        workspace=known.workspace,
+        pullspec=pullspec,
+        host_workdirs=remainder,
+        codeburn=False,
+        with_skills=known.with_skills,
+        no_cache=known.no_cache,
+        entrypoint=known.entrypoint,
+    )
+
+    cfg.workspace = cfg.normalized_workspace
+    return cfg
+
+
+def _usage(ap: argparse.ArgumentParser) -> None:
+    name = Path(sys.argv[0]).name
+    print(
+        f"Usage: {name} --workspace WORKSPACE <host_workdir1> [host_workdir2] ...\n"
+        "       [--harness opencode|claude|codex] [--backend vertex|modelscorp|openai]\n"
+        "       [--pullspec PULLSPEC] [--entrypoint ABSOLUTE_HOST_PATH]\n"
+        f"       {name} --codeburn\n"
+        "\n"
+        "Defaults: --harness opencode --backend openai\n"
+        "Auto-selected backends when --backend is omitted:\n"
+        "  --harness claude   -> vertex\n"
+        "  --harness codex    -> openai\n"
+        "  --harness opencode -> openai"
+    )
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
 # Codeburn
 # ---------------------------------------------------------------------------
-
-DEFAULT_CODEBURN_PULLSPEC = "localhost/codeburn:latest"
-
 
 def run_codeburn(pullspec: str) -> None:
     """Run the codeburn tool to analyze AI spend.
@@ -441,8 +495,7 @@ def run_codeburn(pullspec: str) -> None:
     volumes then executes the `codeburn` binary inside the container.
     Replaces the current process (exec) so TTY handling works correctly.
     """
-    if "localhost" not in pullspec:
-        subprocess.run(["podman", "pull", pullspec], check=True)
+    pull_image_if_needed(pullspec)
 
     os.execvp("podman", [
         "podman", "run", "-it",
@@ -457,7 +510,7 @@ def run_codeburn(pullspec: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Main Application Entrypoint
 # ---------------------------------------------------------------------------
 
 def main() -> None:
@@ -465,28 +518,26 @@ def main() -> None:
 
     if cfg.codeburn:
         run_codeburn(cfg.pullspec)
-        return  # unreachable; exec replaces the process
+        return  # unreachable; exec replaces process
 
-    cfg.workspace = normalize_workspace(cfg)
+    cfg.validate()
 
-    # Validate workdirs
-    for d in cfg.host_workdirs:
-        if not Path(d).is_dir():
-            sys.exit(f"Host workdir {d} does not exist")
+    if not is_container_running(cfg.workspace):
+        pull_image_if_needed(cfg.pullspec)
 
-    # Credential preflight
-    api_key_env_args = preflight_credentials(cfg)
-
-    if not container_exists(cfg.workspace):
-        if "localhost" not in cfg.pullspec:
-            subprocess.run(["podman", "pull", cfg.pullspec], check=True)
-
-        podman_args, trust_anchor_dir_mounted = build_podman_args(cfg, api_key_env_args)
+        podman_args, trust_anchor_dir_mounted = cfg.build_detached_podman_args()
 
         subprocess.run(
             ["podman", "run"] + podman_args + [cfg.pullspec, cfg.workspace],
             check=True,
         )
+
+        time.sleep(1)
+
+        if not is_container_running(cfg.workspace):
+            podman_args, _ = cfg.build_interactive_podman_args()
+            subprocess.run(["podman", "run"] + podman_args + [cfg.pullspec, cfg.workspace])
+            sys.exit(f"Error: Container '{cfg.workspace}' failed to start or exited unexpectedly.")
 
         if trust_anchor_dir_mounted:
             subprocess.run(
@@ -496,8 +547,7 @@ def main() -> None:
 
         time.sleep(1)
 
-    # Replace the current process with the tmux attach so signals and TTY
-    # handling work exactly as if the shell had exec'd it.
+    # Replace current process with tmux attach
     os.execvp("podman", ["podman", "exec", "-it", cfg.workspace, "tmux", "attach-session", "-t", cfg.workspace])
 
 
