@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Unified entrypoint for Claude Code or OpenCode AI sandbox environments.
-# Uses the AI workspace image built daily in GitHub Actions.
+# Uses the AI workspace image built daily in GitHub Actions, including codeburn.
 #
 # I purposely do not use Toolbox for this as I don't want the AI to have
 # unfettered access to my homedir. It will mount the provided host_workdir(s)
@@ -59,7 +59,6 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 DEFAULT_PULLSPEC = "quay.io/zzlotnik/toolbox:ai-helpers-fedora-44"
-DEFAULT_CODEBURN_PULLSPEC = "localhost/codeburn:latest"
 CONTAINER_HOME = Path("/home/claude")
 GCP_PROJECT_ID = "*****"
 HOME_DIR = Path.home()
@@ -427,16 +426,12 @@ def parse_args() -> SandboxConfig:
         else:
             backend = "openai"
 
-    pullspec = known.pullspec
-    if known.codeburn and known.pullspec == DEFAULT_PULLSPEC:
-        pullspec = DEFAULT_CODEBURN_PULLSPEC
-
     if known.codeburn:
         return SandboxConfig(
             harness=known.harness,
             backend=backend,
             workspace=known.workspace or "",
-            pullspec=pullspec,
+            pullspec=known.pullspec,
             host_workdirs=[],
             codeburn=True,
             no_cache=known.no_cache,
@@ -456,7 +451,7 @@ def parse_args() -> SandboxConfig:
         harness=known.harness,
         backend=backend,
         workspace=known.workspace,
-        pullspec=pullspec,
+        pullspec=known.pullspec,
         host_workdirs=remainder,
         codeburn=False,
         no_cache=known.no_cache,
