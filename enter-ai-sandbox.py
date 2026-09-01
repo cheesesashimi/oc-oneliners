@@ -17,7 +17,6 @@
 #   --pullspec     override the container image pullspec
 #   --entrypoint   override entrypoint with an absolute path from the host (mounted to /entrypoint)
 #   --codeburn     run the codeburn tool to analyze AI spend (bypasses normal sandbox)
-#   --with-skills  keep built-in SKILL.md files in place (default: remove them)
 #   --no-cache     skip mounting the claude-project-cache and opencode-cache named volumes
 #
 # Valid combinations:
@@ -63,7 +62,16 @@ DEFAULT_PULLSPEC = "quay.io/zzlotnik/toolbox:ai-helpers-fedora-44"
 DEFAULT_CODEBURN_PULLSPEC = "localhost/codeburn:latest"
 CONTAINER_HOME = Path("/home/claude")
 GCP_PROJECT_ID = "*****"
+HOME_DIR = Path.home()
 GCP_VERTEX_REGION = "global"
+GCP_CONFIG_DIR = HOME_DIR / ".config/gcloud"
+GCP_ADC_FILE = GCP_CONFIG_DIR / "application_default_credentials.json"
+OPENAI_AUTH_FILE = HOME_DIR / ".creds/openai-auth.json"
+MODELSCORP_CONFIG_FILE = HOME_DIR / ".creds/opencode.json"
+MODELSCORP_APIKEYS_FILE = HOME_DIR / ".creds/apikeys.txt"
+MODELSCORP_ENVVARS_FILE = HOME_DIR / ".creds/envvars.txt"
+JIRA_API_TOKEN_FILE = HOME_DIR / ".creds/zzlotnik-jira-cloud-api-key"
+GH_TOKEN_FILE = HOME_DIR / ".creds/gh-readonly-token"
 
 VALID_COMBINATIONS: set[tuple[str, str]] = {
     ("opencode", "vertex"),
@@ -194,7 +202,6 @@ class SandboxConfig:
     pullspec: str
     host_workdirs: list[str]
     codeburn: bool
-    with_skills: bool
     no_cache: bool
     entrypoint: str | None = None
 
@@ -243,7 +250,7 @@ class SandboxConfig:
         if self.harness == "claude":
             return self._claude_auth_args()
         elif self.backend == "vertex":
-            _require_file(Path.home() / ".config/gcloud/application_default_credentials.json")
+            _require_file(GCP_ADC_FILE)
             return self._opencode_vertex_auth_args()
         elif self.backend == "openai":
             return self._openai_auth_args()
@@ -259,9 +266,7 @@ class SandboxConfig:
         return ["--detach"] + args, trust_anchor_dir_mounted
     
     def _openai_auth_args(self) -> tuple[list[str]]:
-        home = Path.home()
-
-        openai_auth_file = home / ".creds/openai-auth.json"
+        openai_auth_file = OPENAI_AUTH_FILE
         if not openai_auth_file.is_file():
             sys.exit(f"Error: Expected OpenAI auth file at {openai_auth_file}")
 
@@ -282,7 +287,7 @@ class SandboxConfig:
             "--env", "CLAUDE_CODE_USE_VERTEX=1",
             "--env", f"CLOUD_ML_REGION={GCP_VERTEX_REGION}",
             "--env", f"ANTHROPIC_VERTEX_PROJECT_ID={GCP_PROJECT_ID}",
-            "--volume", f"{Path.home()}/.config/gcloud:{CONTAINER_HOME}/.config/gcloud:z,U",
+            "--volume", f"{GCP_CONFIG_DIR}:{CONTAINER_HOME}/.config/gcloud:z,U",
         ]
 
     def _opencode_vertex_auth_args(self) -> tuple[list[str]]:
@@ -290,14 +295,14 @@ class SandboxConfig:
             "--env", f"GOOGLE_CLOUD_PROJECT={GCP_PROJECT_ID}",
             "--env", f"VERTEX_LOCATION={GCP_VERTEX_REGION}",
             "--env", f"GOOGLE_APPLICATION_CREDENTIALS={CONTAINER_HOME}/.config/gcloud/application_default_credentials.json",
-            "--volume", f"{Path.home()}/.config/gcloud:{CONTAINER_HOME}/.config/gcloud:z,U",
+            "--volume", f"{GCP_CONFIG_DIR}:{CONTAINER_HOME}/.config/gcloud:z,U",
         ]
 
     def _modelscorp_auth_args(self) -> tuple[list[str]]:
         # modelscorp
-        _require_file(home / ".creds/opencode.json")
-        apikeys_file = _require_file(home / ".creds/apikeys.txt")
-        envvars_file = _require_file(home / ".creds/envvars.txt")
+        _require_file(MODELSCORP_CONFIG_FILE)
+        apikeys_file = _require_file(MODELSCORP_APIKEYS_FILE)
+        envvars_file = _require_file(MODELSCORP_ENVVARS_FILE)
 
         provider_env_map = _read_kv_file(envvars_file)
         api_keys = _read_kv_file(apikeys_file)
@@ -313,7 +318,7 @@ class SandboxConfig:
                 )
 
         return env_args + [
-            "--volume", f"{home}/.creds/opencode.json:{CONTAINER_HOME}/.config/opencode/opencode.json:z,U,ro",
+            "--volume", f"{MODELSCORP_CONFIG_FILE}:{CONTAINER_HOME}/.config/opencode/opencode.json:z,U,ro",
         ]
 
     def _build_podman_args(self) -> tuple[list[str], bool]:
@@ -321,7 +326,6 @@ class SandboxConfig:
 
         Returns (args, trust_anchor_dir_mounted).
         """
-        home = Path.home()
         primary_workdir = Path(self.host_workdirs[0])
         workspace_name = self.normalized_workspace
 
@@ -340,20 +344,19 @@ class SandboxConfig:
             "--env", "LANG=en_US.UTF-8",
             "--env", "LC_ALL=en_US.UTF-8",
             "--env", f"AI_TOOL={self.harness}",
-            "--env", f"WITH_SKILLS={'true' if self.with_skills else 'false'}",
         ]
 
         # Optional secrets
         _add_file_secret_env(
             args,
-            home / ".creds/zzlotnik-jira-cloud-api-key",
+            JIRA_API_TOKEN_FILE,
             "JIRA_API_TOKEN",
             extra_env={
                 "JIRA_URL": "https://redhat.atlassian.net",
                 "JIRA_USER": "zzlotnik@redhat.com",
             },
         )
-        _add_file_secret_env(args, home / ".creds/gh-readonly-token", "GH_TOKEN")
+        _add_file_secret_env(args, GH_TOKEN_FILE, "GH_TOKEN")
 
         # Entrypoint override flag
         if self.entrypoint:
@@ -367,7 +370,7 @@ class SandboxConfig:
         args += trust_anchor_args
 
         # Common system prompt & cache volume mounts across all backends
-        system_prompt_file = home / "Repos/oc-oneliners/opencodesystemprompt.md"
+        system_prompt_file = HOME_DIR / "Repos/oc-oneliners/opencodesystemprompt.md"
         if system_prompt_file.is_file():
             args += ["--volume", f"{system_prompt_file}:{self.system_prompt_target}:ro,z"]
 
@@ -378,7 +381,7 @@ class SandboxConfig:
         args += self._get_auth_args()
 
         # Conditionally mount ~/.config/gws
-        gws_dir = home / ".config/gws"
+        gws_dir = HOME_DIR / ".config/gws"
         if gws_dir.is_dir():
             args += ["--volume", f"{gws_dir}:{CONTAINER_HOME}/.config/gws:z,U"]
 
@@ -411,7 +414,6 @@ def parse_args() -> SandboxConfig:
     ap.add_argument("--workspace", default=None)
     ap.add_argument("--entrypoint", default=None)
     ap.add_argument("--codeburn", action="store_true", default=False)
-    ap.add_argument("--with-skills", action="store_true", default=False)
     ap.add_argument("--no-cache", action="store_true", default=False)
 
     known, remainder = ap.parse_known_args()
@@ -437,7 +439,6 @@ def parse_args() -> SandboxConfig:
             pullspec=pullspec,
             host_workdirs=[],
             codeburn=True,
-            with_skills=known.with_skills,
             no_cache=known.no_cache,
             entrypoint=known.entrypoint,
         )
@@ -458,7 +459,6 @@ def parse_args() -> SandboxConfig:
         pullspec=pullspec,
         host_workdirs=remainder,
         codeburn=False,
-        with_skills=known.with_skills,
         no_cache=known.no_cache,
         entrypoint=known.entrypoint,
     )
@@ -519,6 +519,8 @@ def main() -> None:
     if cfg.codeburn:
         run_codeburn(cfg.pullspec)
         return  # unreachable; exec replaces process
+
+    print(f"Starting sandbox with harness '{cfg.harness}' and backend '{cfg.backend}'")
 
     cfg.validate()
 
