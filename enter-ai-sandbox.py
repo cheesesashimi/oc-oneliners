@@ -159,11 +159,11 @@ def find_registry_auth() -> Path | None:
     if registry_auth_file_env:
         candidates.append(Path(registry_auth_file_env))
 
-    xdg_runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
-    candidates.append(xdg_runtime / "containers/auth.json")
-
     docker_config = Path(os.environ.get("DOCKER_CONFIG", home / ".docker"))
     candidates.append(docker_config / "config.json")
+
+    xdg_runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    candidates.append(xdg_runtime / "containers/auth.json")
 
     candidates += [
         home / ".config/containers/auth.json",
