@@ -73,6 +73,7 @@ JIRA_API_TOKEN_FILE = HOME_DIR / ".creds/zzlotnik-jira-cloud-api-key"
 GH_TOKEN_FILE = HOME_DIR / ".creds/gh-readonly-token"
 
 VALID_COMBINATIONS: set[tuple[str, str]] = {
+    ("opencode", "ollama"),
     ("opencode", "vertex"),
     ("opencode", "modelscorp"),
     ("opencode", "openai"),
@@ -83,9 +84,10 @@ VALID_COMBINATIONS: set[tuple[str, str]] = {
 WORKSPACE_PREFIX_MAP: dict[tuple[str, str], str] = {
     ("claude", "vertex"): "claude-",
     ("codex", "openai"): "codex-openai-",
-    ("opencode", "vertex"): "opencode-",
+    ("opencode", "vertex"): "opencode-vertex-",
     ("opencode", "modelscorp"): "opencode-modelscorp-",
     ("opencode", "openai"): "opencode-openai-",
+    ("opencode", "ollama"): "opencode-ollama-",
 }
 
 
@@ -255,6 +257,8 @@ class SandboxConfig:
             return self._openai_auth_args()
         elif self.backend == "modelscorp":
             return self._modelscorp_auth_args()
+        elif self.backend == "ollama":
+            return self._ollama_auth_args()
 
     def build_interactive_podman_args(self) -> tuple[list[str], bool]:
         args, trust_anchor_dir_mounted = self._build_podman_args()
@@ -295,6 +299,11 @@ class SandboxConfig:
             "--env", f"VERTEX_LOCATION={GCP_VERTEX_REGION}",
             "--env", f"GOOGLE_APPLICATION_CREDENTIALS={CONTAINER_HOME}/.config/gcloud/application_default_credentials.json",
             "--volume", f"{GCP_CONFIG_DIR}:{CONTAINER_HOME}/.config/gcloud:z,U",
+        ]
+
+    def _ollama_auth_args(self) -> tuple[list[str]]:
+        return [
+            "--volume", f"{HOME_DIR}/.creds/opencode-ollama.json:{CONTAINER_HOME}/.config/opencode/opencode.json:ro",
         ]
 
     def _modelscorp_auth_args(self) -> tuple[list[str]]:
@@ -409,7 +418,7 @@ def parse_args() -> SandboxConfig:
     """Parse command-line arguments and return a SandboxConfig."""
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--harness", choices=["opencode", "claude", "codex"], default="opencode")
-    ap.add_argument("--backend", choices=["vertex", "modelscorp", "openai"], default=None)
+    ap.add_argument("--backend", choices=["vertex", "modelscorp", "openai", "ollama"], default=None)
     ap.add_argument("--pullspec", default=DEFAULT_PULLSPEC)
     ap.add_argument("--workspace", default=None)
     ap.add_argument("--entrypoint", default=None)
