@@ -353,6 +353,7 @@ class SandboxConfig:
             extra_env={
                 "JIRA_URL": "https://redhat.atlassian.net",
                 "JIRA_USER": "zzlotnik@redhat.com",
+                "JIRA_USERNAME": "zzlotnik@redhat.com",
             },
         )
         _add_file_secret_env(args, GH_TOKEN_FILE, "GH_TOKEN")
